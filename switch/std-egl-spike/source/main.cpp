@@ -2,10 +2,13 @@
 #include <EGL/egl.h>
 #include <switch/services/csrng.h>
 #include <cstddef>
+#include <cstdint>
 #include <cerrno>
 #include <sys/types.h>
 
-extern "C" void lookingglass_miniquad_smoke();
+extern "C" bool lookingglass_miniquad_init();
+extern "C" bool lookingglass_miniquad_frame(std::uint64_t buttons);
+extern "C" void lookingglass_miniquad_exit();
 extern "C" void* lookingglass_get_proc_address(const char* name);
 extern "C" int lookingglass_fill_random(void* dest, std::size_t len);
 
@@ -16,6 +19,26 @@ void* lookingglass_get_proc_address(const char* name) {
 int lookingglass_fill_random(void* dest, std::size_t len) {
     return R_SUCCEEDED(csrngGetRandomBytes(dest, len)) ? 0 : -1;
 }
+
+struct Runtime {
+    EGLDisplay display{EGL_NO_DISPLAY};
+    EGLSurface surface{EGL_NO_SURFACE};
+    EGLContext context{EGL_NO_CONTEXT};
+    bool egl_initialized{false};
+    bool csrng_ready{false};
+    bool miniquad_ready{false};
+
+    ~Runtime() {
+        if (miniquad_ready) lookingglass_miniquad_exit();
+        if (display != EGL_NO_DISPLAY && egl_initialized) {
+            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
+            if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
+            eglTerminate(display);
+        }
+        if (csrng_ready) csrngExit();
+    }
+};
 
 extern "C" ssize_t getrandom(void* dest, std::size_t len, unsigned int flags) {
     if (flags != 0) {
@@ -30,13 +53,16 @@ extern "C" ssize_t getrandom(void* dest, std::size_t len, unsigned int flags) {
 }
 
 int main(int, char**) {
+    Runtime runtime;
     if (R_FAILED(csrngInitialize())) return 6;
+    runtime.csrng_ready = true;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad{};
     padInitializeDefault(&pad);
 
-    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) return 1;
+    runtime.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (runtime.display == EGL_NO_DISPLAY || !eglInitialize(runtime.display, nullptr, nullptr)) return 1;
+    runtime.egl_initialized = true;
     if (!eglBindAPI(EGL_OPENGL_ES_API)) return 2;
 
     const EGLint config_attrs[] = {
@@ -46,27 +72,23 @@ int main(int, char**) {
     };
     EGLConfig config{};
     EGLint count = 0;
-    if (!eglChooseConfig(display, config_attrs, &config, 1, &count) || count < 1) return 3;
-    EGLSurface surface = eglCreateWindowSurface(
-        display, config, (EGLNativeWindowType)nwindowGetDefault(), nullptr);
-    if (surface == EGL_NO_SURFACE) return 4;
+    if (!eglChooseConfig(runtime.display, config_attrs, &config, 1, &count) || count < 1) return 3;
+    runtime.surface = eglCreateWindowSurface(
+        runtime.display, config, (EGLNativeWindowType)nwindowGetDefault(), nullptr);
+    if (runtime.surface == EGL_NO_SURFACE) return 4;
     const EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs);
-    if (context == EGL_NO_CONTEXT || !eglMakeCurrent(display, surface, surface, context)) return 5;
+    runtime.context = eglCreateContext(runtime.display, config, EGL_NO_CONTEXT, context_attrs);
+    if (runtime.context == EGL_NO_CONTEXT || !eglMakeCurrent(runtime.display, runtime.surface, runtime.surface, runtime.context)) return 5;
+    if (!lookingglass_miniquad_init()) return 8;
+    runtime.miniquad_ready = true;
 
-    lookingglass_miniquad_smoke();
-    if (!eglSwapBuffers(display, surface)) return 7;
-
+    int result = 0;
     while (appletMainLoop()) {
         padUpdate(&pad);
-        if (padGetButtonsDown(&pad) & (HidNpadButton_Plus | HidNpadButton_B)) break;
-        svcSleepThread(16'000'000);
+        if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+        const bool a_held = (padGetButtons(&pad) & HidNpadButton_A) != 0;
+        if (!lookingglass_miniquad_frame(a_held ? 1 : 0)) { result = 9; break; }
+        if (!eglSwapBuffers(runtime.display, runtime.surface)) { result = 7; break; }
     }
-
-    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    eglDestroyContext(display, context);
-    eglDestroySurface(display, surface);
-    eglTerminate(display);
-    csrngExit();
-    return 0;
+    return result;
 }

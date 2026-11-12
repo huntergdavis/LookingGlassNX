@@ -9,14 +9,17 @@ The original probe worktree and commit remain unchanged.
 
 `switch/std-egl-spike` combines a minimal Rust `staticlib` with a C++/libnx
 application. The C++ side creates a libnx window, EGL display/surface and GLES2
-context, then obtains GL function pointers through `eglGetProcAddress`. Once
-that context is current, it calls Rust code that constructs Miniquad 0.4.8's
-public `GlContext`, begins and ends a default clear pass, and commits the frame.
-The C++ host swaps that Miniquad-rendered frame once, then waits in its own
-applet loop. That Plus/B exit loop is host plumbing; it does not bridge input
-into the Alice engine. The Rust library calls `std::path::Path::components()`
-to exercise a `std` API. It does not open or stat a filesystem path. It also
-uses `getrandom` through the Switch CSRNG service.
+context, then obtains GL function pointers through `eglGetProcAddress`. Rust
+owns one Miniquad 0.4.8 `GlContext` for the life of the loop and draws a frame
+after each controller poll. Holding A changes the display from blue to green;
+Plus exits the applet loop. The Rust library also calls
+`std::path::Path::components()` to exercise a `std` API and uses `getrandom`
+through the Switch CSRNG service. It does not open or stat a filesystem path.
+
+The C++ `Runtime` guard releases the Miniquad context, current EGL state,
+context, surface, display and CSRNG service on normal exit and all early-return
+paths after initialization. Multiplayer and the Alice map/engine are not
+started by this milestone.
 
 The pinned nightly Rust toolchain cross-built the Rust static library. The
 cached local builder image `local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587`
@@ -28,12 +31,21 @@ size:   6129861 bytes
 sha256: c0b475615904e8b85f5d1151307d6f308875e4be25114ca736b3717424e1bb00
 ```
 
-The ELF symbol table contains `lookingglass_path_components_smoke`,
-`lookingglass_miniquad_smoke`, and the `getrandom` shim. This demonstrates a
-cross-build and link path for Rust `std` plus Miniquad's GL renderer under an
-externally-created EGL context. The source now swaps the Miniquad clear frame,
-but this is still compiler/linker evidence: the NRO has not run, so no pixels
-were observed and Miniquad behavior on console is unverified.
+The current boot/input candidate NRO is:
+
+```text
+switch/std-egl-spike/src.nro
+size:   6129861 bytes
+sha256: fd83eb8c0f78fb7a44d8dd1d9bf0136d74bdda188e6919caceca10bb94538ce5
+```
+
+Its ELF symbol table contains `lookingglass_miniquad_init`,
+`lookingglass_miniquad_frame`, `lookingglass_miniquad_exit`, and the `getrandom`
+shim. This demonstrates a cross-build and link path for the Rust `std` library
+and a persistent Miniquad GL context under externally-created EGL. It is not
+yet a demonstrated hardware boot: the NRO has not run on a Switch, so display,
+controller input, Plus exit, and resource cleanup are still source/link claims
+awaiting a device run.
 
 ## Rebuilding this spike
 
@@ -126,8 +138,9 @@ architecture, but it is a precedent rather than a drop-in: its Rust source
 patches, allocator, TLS workarounds, and renderer are project-specific. See
 [FlashNX development notes](https://github.com/Jonathan8520/FlashNX/blob/main/DEVELOPMENT.md).
 
-The NRO has not been run on Switch hardware. Display output, pad input,
-CSRNG service behavior, std filesystem paths, thread-local state, threads,
-audio, memory use, and frame timing remain unverified. No Alice code or user
-game data is included. First-playable acceptance remains the separate device
-checklist in [`SWITCH_PORT.md`](SWITCH_PORT.md).
+The NRO has not been run on Switch hardware. Display output, pad input, Plus
+exit, CSRNG service behavior, `std` filesystem paths, thread-local state,
+threads, audio, memory use, and frame timing remain unverified. No Alice code
+or user game data is included. This is a boot/input artifact for a device
+milestone review, not the first-playable game; that acceptance remains in the
+separate device checklist in [`SWITCH_PORT.md`](SWITCH_PORT.md).
