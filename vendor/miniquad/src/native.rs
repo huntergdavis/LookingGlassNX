@@ -122,3 +122,4 @@ pub mod gl;
 pub use wasm::webgl as gl;
 
 pub mod query_stab;
+mod horizon_pad;

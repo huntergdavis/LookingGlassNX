@@ -1,21 +1,26 @@
 //! Minimal libnx host runner. Native window/EGL lifetime remains in the C++ host.
 use crate::{conf::Conf, event::EventHandler, native::NativeDisplayData};
+use super::horizon_pad::{map_horizon_buttons, map_horizon_triggers};
 use std::{cell::RefCell, ffi::{c_char, c_void}};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 thread_local! {
     // Horizon's libnx loop and Miniquad callbacks run on the same main thread.
     static HANDLER: RefCell<Option<Box<dyn EventHandler>>> = RefCell::new(None);
 }
 static FUTURE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PAD_CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PAD_STATE: std::sync::Mutex<RawPad> = std::sync::Mutex::new(RawPad {
     buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0,
 });
+// Keep the receiver alive for the lifetime of the display. Miniquad's public
+// window APIs send through NativeDisplayData::native_requests and unwrap.
+static NATIVE_REQUESTS: std::sync::Mutex<Option<Receiver<crate::native::Request>>> = std::sync::Mutex::new(None);
 
 pub unsafe fn run<F>(_conf: Conf, f: F)
 where F: 'static + FnOnce() -> Box<dyn EventHandler> {
     extern "C" { fn miniquad_horizon_attach(handler: *mut c_void) -> bool; }
-    let create_handler: Box<dyn FnOnce() -> Box<dyn EventHandler>> = Box::new(f);
-    let raw = Box::into_raw(Box::new(create_handler)) as *mut c_void;
+    let raw = Box::into_raw(Box::new(f)) as *mut c_void;
     assert!(miniquad_horizon_attach(raw), "Horizon host rejected Miniquad callback");
 }
 
@@ -29,69 +34,40 @@ extern "C" {
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct RawPad { buttons: u16, lt: u8, rt: u8, lx: i16, ly: i16, rx: i16, ry: i16 }
+pub struct RawPad { pub buttons: u16, pub lt: u8, pub rt: u8, pub lx: i16, pub ly: i16, pub rx: i16, pub ry: i16 }
 #[repr(C)]
 #[derive(Default)]
-pub struct RawState { packet: u32, pad: RawPad }
+pub struct RawState { pub packet: u32, pub pad: RawPad }
 
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_pad(index: u32, state: *mut RawState) -> bool {
     if index != 0 || state.is_null() { return false; }
     unsafe {
-        if !lg_hid_connected(index) { return false; }
+        if !lg_hid_connected(index) {
+            PAD_CONNECTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            return false;
+        }
         let mut buttons = 0u64;
-        if !lg_hid_buttons(index, &mut buttons) { return false; }
+        if !lg_hid_buttons(index, &mut buttons) {
+            PAD_CONNECTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            return false;
+        }
         let mut pad = RawPad::default();
         let mut axes = (0i16, 0i16, 0i16, 0i16);
-        if !lg_hid_axes(index, &mut axes.0, &mut axes.1, &mut axes.2, &mut axes.3) { return false; }
+        if !lg_hid_axes(index, &mut axes.0, &mut axes.1, &mut axes.2, &mut axes.3) {
+            PAD_CONNECTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            return false;
+        }
         pad.buttons = map_horizon_buttons(buttons);
-        if buttons & (1 << 8) != 0 { pad.lt = 255; }
-        if buttons & (1 << 9) != 0 { pad.rt = 255; }
+        (pad.lt, pad.rt) = map_horizon_triggers(buttons);
         pad.lx = axes.0;
         pad.ly = axes.1;
         pad.rx = axes.2;
         pad.ry = axes.3;
         *PAD_STATE.lock().unwrap() = pad;
+        PAD_CONNECTED.store(true, std::sync::atomic::Ordering::Relaxed);
         (*state).pad = pad;
         true
-    }
-}
-
-fn map_horizon_buttons(buttons: u64) -> u16 {
-    // libnx HidNpadButton bit positions -> the engine's XInput-compatible RawPad.
-    let pairs = [
-        (0x1000, 0), (0x2000, 1), (0x4000, 2), (0x8000, 3),
-        (0x0100, 6), (0x0200, 7), (0x0040, 4), (0x0080, 5),
-        (0x0020, 11), // Minus is Back.
-        (0x0010, 10), // Plus is Start (host exits on its down edge).
-    ];
-    let mut out = 0;
-    for (dst, src) in pairs {
-        if buttons & (1u64 << src) != 0 { out |= dst; }
-    }
-    if buttons & (1 << 12) != 0 { out |= 4; }
-    if buttons & (1 << 13) != 0 { out |= 1; }
-    if buttons & (1 << 14) != 0 { out |= 8; }
-    if buttons & (1 << 15) != 0 { out |= 2; }
-    out
-}
-
-#[cfg(test)]
-mod horizon_pad_tests {
-    use super::map_horizon_buttons;
-
-    #[test]
-    fn maps_libnx_buttons_to_engine_rawpad_masks() {
-        assert_eq!(map_horizon_buttons(1 << 0), 0x1000); // A/accept
-        assert_eq!(map_horizon_buttons(1 << 1), 0x2000); // B/back
-        assert_eq!(map_horizon_buttons(1 << 2), 0x4000); // X
-        assert_eq!(map_horizon_buttons(1 << 3), 0x8000); // Y
-        assert_eq!(map_horizon_buttons(1 << 10), 0x0010); // Plus/Start
-        assert_eq!(map_horizon_buttons(1 << 11), 0x0020); // Minus/Back
-        assert_eq!(map_horizon_buttons(1 << 12), 0x0004); // D-pad left
-        assert_eq!(map_horizon_buttons(1 << 13), 0x0001); // D-pad up
-        assert_eq!(map_horizon_buttons(1 << 14), 0x0008); // D-pad right
-        assert_eq!(map_horizon_buttons(1 << 15), 0x0002); // D-pad down
     }
 }
 
@@ -111,10 +87,12 @@ pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
         crate::native::gl::load_gl_funcs(load);
         lg_set_gl_viewport(width, height);
     }
+    let (tx, rx) = std::sync::mpsc::channel();
+    *NATIVE_REQUESTS.lock().unwrap() = Some(rx);
     crate::set_display(NativeDisplayData::new(
         width,
         height,
-        std::sync::mpsc::channel().0,
+        tx,
         Box::new(NullClipboard),
     ));
     true
@@ -129,6 +107,7 @@ pub extern "C" fn miniquad_horizon_attach(handler: *mut c_void) -> bool {
         let mut slot = slot.borrow_mut();
         if slot.is_some() { return false; }
         *slot = Some(callback());
+        drain_native_requests();
         true
     })
 }
@@ -154,24 +133,63 @@ pub extern "C" fn miniquad_horizon_frame() {
         FUTURE_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
         return;
     }
+    drain_native_requests();
     HANDLER.with(|slot| {
-        if let Some(handler) = slot.borrow_mut().as_mut() { handler.update(); handler.draw(); }
+        if let Some(handler) = slot.borrow_mut().as_mut() {
+            handler.update();
+            drain_native_requests();
+            handler.draw();
+            drain_native_requests();
+        }
     });
 }
 
-#[no_mangle]
-pub extern "C" fn miniquad_horizon_pad_buttons() -> u16 {
-    PAD_STATE.lock().unwrap().buttons
+fn drain_native_requests() {
+    let requests = NATIVE_REQUESTS.lock().unwrap();
+    let Some(receiver) = requests.as_ref() else { return; };
+    consume_native_requests(receiver);
+}
+
+fn consume_native_requests(receiver: &Receiver<crate::native::Request>) {
+    loop {
+        match receiver.try_recv() {
+            Ok(crate::native::Request::SetFullscreen(_)) => {},
+            Ok(crate::native::Request::ScheduleUpdate
+                | crate::native::Request::SetCursorGrab(_)
+                | crate::native::Request::ShowMouse(_)
+                | crate::native::Request::SetMouseCursor(_)
+                | crate::native::Request::SetWindowSize { .. }
+                | crate::native::Request::SetWindowPosition { .. }
+                | crate::native::Request::ShowKeyboard(_)) => {},
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_request_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn display_requests_remain_sendable_and_are_drained() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(crate::native::Request::SetFullscreen(true)).unwrap();
+        tx.send(crate::native::Request::SetWindowSize { new_width: 800, new_height: 600 }).unwrap();
+        tx.send(crate::native::Request::ShowMouse(false)).unwrap();
+        consume_native_requests(&rx);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        tx.send(crate::native::Request::SetCursorGrab(false)).unwrap();
+        consume_native_requests(&rx);
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn miniquad_horizon_pad_down() -> u16 {
-    static PREVIOUS: std::sync::Mutex<u16> = std::sync::Mutex::new(0);
-    let current = PAD_STATE.lock().unwrap().buttons;
-    let mut previous = PREVIOUS.lock().unwrap();
-    let down = current & !*previous;
-    *previous = current;
-    down
+pub extern "C" fn miniquad_horizon_readpad(state: *mut RawState) -> bool {
+    if state.is_null() { return false; }
+    let pad = *PAD_STATE.lock().unwrap();
+    unsafe { (*state).pad = pad; }
+    PAD_CONNECTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[no_mangle]

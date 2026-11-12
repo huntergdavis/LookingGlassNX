@@ -5,6 +5,7 @@ rustflags = [
     "--cfg", 'target_family="unix"',
     "--cfg", 'target_env="newlib"',
     "--cfg", "unix",
+    "--cfg", 'getrandom_backend="custom"',
     "-A", "explicit_builtin_cfgs_in_flags",
     "-Z", "has-thread-local=true",
 ]

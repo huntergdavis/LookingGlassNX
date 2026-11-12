@@ -1,3 +1,23 @@
+#[cfg(target_os = "horizon")]
+extern "C" {
+    fn lg_csrng_fill(buffer: *mut u8, length: usize) -> i32;
+}
+
+// getrandom 0.3/0.4 select this stable custom-backend hook on Horizon. The
+// libnx host owns CSRNG service setup and serializes its implementation.
+#[cfg(target_os = "horizon")]
+#[no_mangle]
+extern "Rust" fn __getrandom_v03_custom(
+    destination: *mut u8,
+    length: usize,
+) -> Result<(), getrandom::Error> {
+    if unsafe { lg_csrng_fill(destination, length) } == 0 {
+        Ok(())
+    } else {
+        Err(getrandom::Error::new_custom(1))
+    }
+}
+
 mod acting;
 mod ambient_animation;
 mod animation_events;
@@ -168,21 +188,56 @@ fn main() {
     }
 }
 
+#[cfg(target_os = "horizon")]
+#[no_mangle]
+pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
+    match run() {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("Looking GlassNX: {error:#}");
+            false
+        }
+    }
+}
+
+fn default_data_dir() -> PathBuf {
+    if cfg!(target_os = "horizon") {
+        std::env::var_os("LOOKING_GLASS_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("sdmc:/switch/alice-nx/game-data"))
+    } else {
+        std::fs::read_to_string("private/data-path.txt")
+            .ok()
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| PathBuf::from(path.trim()))
+            .unwrap_or_else(|| PathBuf::from("alice_202106/Alice1/bin/base"))
+    }
+}
+
+fn default_save_dir() -> PathBuf {
+    if cfg!(target_os = "horizon") {
+        PathBuf::from("sdmc:/switch/alice-nx/profile/saves")
+    } else {
+        PathBuf::from("private/saves")
+    }
+}
+
 fn run() -> Result<()> {
+    #[cfg(target_os = "horizon")]
+    std::env::set_var(
+        "LOOKING_GLASS_SETTINGS_DIR",
+        "sdmc:/switch/alice-nx/profile",
+    );
     if let Some(result) = coop::check::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return result;
     }
     let mut o = Options {
         coop: None,
         difficulty: Default::default(),
-        save_dir: PathBuf::from("private/saves"),
+        save_dir: default_save_dir(),
         load: None,
         new_game: false,
-        data: std::fs::read_to_string("private/data-path.txt")
-            .ok()
-            .filter(|path| !path.trim().is_empty())
-            .map(|path| PathBuf::from(path.trim()))
-            .unwrap_or_else(|| PathBuf::from("alice_202106/Alice1/bin/base")),
+        data: default_data_dir(),
         map: "skool1".into(),
         direct_map: false,
         entry: None,
@@ -587,7 +642,26 @@ fn run() -> Result<()> {
     if o.capture.is_some() && o.frames.is_none() {
         bail!("--capture requires --frames");
     }
-    let mut assets = Assets::open(&o.data)?;
+    let mut assets = match Assets::open(&o.data) {
+        Ok(assets) => assets,
+        Err(error) if cfg!(target_os = "horizon") => {
+            let guidance = format!(
+                "{error:#}. Looking GlassNX needs the original 2011 PC Alice PK3 archives in one folder. Set LOOKING_GLASS_DATA_DIR to that folder; Xbox 360 Alice: Madness Returns files are not compatible and were left untouched."
+            );
+            macroquad::Window::from_config(viewer::config(), async move {
+                eprintln!("Looking GlassNX data error: {guidance}");
+                loop {
+                    macroquad::prelude::clear_background(macroquad::prelude::BLACK);
+                    macroquad::prelude::draw_text("2011 PC Alice PK3 data required", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to the folder containing the original PC .pk3 files.", 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Xbox 360 Alice: Madness Returns data is not compatible.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::next_frame().await;
+                }
+            });
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     if mode == "campaign-playtest" {
         macroquad::Window::from_config(viewer::config(), async move {
             if let Err(e) = campaign_playtest::run(&mut assets, chain, o.difficulty).await {

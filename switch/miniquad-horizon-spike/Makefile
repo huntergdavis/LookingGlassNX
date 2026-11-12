@@ -63,7 +63,7 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-RUST_LIB := $(TOPDIR)/target/aarch64-nintendo-switch-freestanding/release/liblookingglass_switch_miniquad_horizon_spike.a
+RUST_LIB := $(TOPDIR)/../../target/aarch64-nintendo-switch-freestanding/release/liblooking_glass_horizon.a
 LIBS := $(RUST_LIB) -Wl,--start-group -lEGL -lGLESv2 -lglapi -ldrm_nouveau -Wl,--end-group -lstdc++ -lnx -lm
 
 #---------------------------------------------------------------------------------

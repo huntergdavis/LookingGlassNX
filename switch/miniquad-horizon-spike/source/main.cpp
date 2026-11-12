@@ -1,25 +1,75 @@
 #include <switch.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <unistd.h>
 #include <switch/services/csrng.h>
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
+#include <limits>
+#include <mutex>
 #include <sys/types.h>
+#include "sysconf_compat.h"
 
 extern "C" bool miniquad_horizon_start(int width, int height);
 extern "C" void miniquad_horizon_frame();
 extern "C" void miniquad_horizon_stop();
 extern "C" bool miniquad_horizon_should_quit();
-extern "C" void lookingglass_horizon_entry();
+extern "C" bool lookingglass_horizon_game_entry();
+
+// newlib's libnx sysconf implementation is not linked on this target. Rust
+// std needs page size for thread stack alignment and online CPU count for its
+// thread pool. Keep these two queries bounded and reject everything else.
+static_assert(_SC_PAGESIZE == 8, "pinned newlib _SC_PAGESIZE ABI changed");
+static_assert(_SC_NPROCESSORS_ONLN == 10, "pinned newlib _SC_NPROCESSORS_ONLN ABI changed");
+extern "C" long sysconf(int name) {
+    return lgnx_sysconf_query(name, _SC_PAGESIZE, _SC_NPROCESSORS_ONLN);
+}
 static void* proc(const char* name) { return reinterpret_cast<void*>(eglGetProcAddress(name)); }
 extern "C" void* lg_egl_proc(const char* name) { return proc(name); }
 extern "C" void lg_set_gl_viewport(int width, int height) { glViewport(0, 0, width, height); }
 
 // Rust std uses the POSIX getrandom ABI for randomized HashMap seeds. Horizon
 // provides the same entropy source through libnx's CSRNG service instead.
+static std::mutex g_csrng_mutex;
+static bool g_csrng_ready = false;
+extern "C" bool lg_csrng_init() {
+    std::lock_guard<std::mutex> lock(g_csrng_mutex);
+    if (g_csrng_ready) return true;
+    g_csrng_ready = R_SUCCEEDED(csrngInitialize());
+    return g_csrng_ready;
+}
+extern "C" void lg_csrng_shutdown() {
+    std::lock_guard<std::mutex> lock(g_csrng_mutex);
+    if (g_csrng_ready) {
+        csrngExit();
+        g_csrng_ready = false;
+    }
+}
+extern "C" int lg_csrng_fill(uint8_t* buffer, size_t length) {
+    if (length == 0) return 0;
+    if (!buffer) return -1;
+    if (length > static_cast<size_t>(std::numeric_limits<ssize_t>::max())) return -1;
+    std::lock_guard<std::mutex> lock(g_csrng_mutex);
+    if (!g_csrng_ready) return -1;
+    size_t done = 0;
+    while (done < length) {
+        const size_t chunk = std::min<size_t>(length - done, 0x1000);
+        if (R_FAILED(csrngGetRandomBytes(static_cast<uint8_t*>(buffer) + done, chunk))) {
+            return -1;
+        }
+        done += chunk;
+    }
+    return 0;
+}
 extern "C" ssize_t getrandom(void* buffer, size_t length, unsigned int flags) {
-    if (flags != 0 || (!buffer && length != 0)) { errno = EINVAL; return -1; }
-    if (R_FAILED(csrngGetRandomBytes(buffer, length))) { errno = EIO; return -1; }
+    if (flags != 0 || length > static_cast<size_t>(std::numeric_limits<ssize_t>::max())) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (length == 0) return 0;
+    if (!buffer) { errno = EFAULT; return -1; }
+    if (lg_csrng_fill(static_cast<uint8_t*>(buffer), length) != 0) { errno = EIO; return -1; }
     return static_cast<ssize_t>(length);
 }
 
@@ -39,11 +89,11 @@ extern "C" bool lg_hid_axes(uint32_t index, int16_t* lx, int16_t* ly, int16_t* r
 }
 
 int main(int, char**) {
-    if (R_FAILED(csrngInitialize())) return 10;
+    if (!lg_csrng_init()) return 10;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) { csrngExit(); return 1; }
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) { lg_csrng_shutdown(); return 1; }
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
     auto cleanup = [&]() {
@@ -51,7 +101,7 @@ int main(int, char**) {
         if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
         if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
         eglTerminate(display);
-        csrngExit();
+        lg_csrng_shutdown();
     };
     if (!eglBindAPI(EGL_OPENGL_ES_API)) { cleanup(); return 2; }
     const EGLint attrs[] = {EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_DEPTH_SIZE,24,EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES3_BIT,EGL_NONE};
@@ -67,12 +117,14 @@ int main(int, char**) {
     if (!proc("glGenVertexArrays") || !proc("glBindVertexArray") || !proc("glDeleteVertexArrays")) { cleanup(); return 7; }
     if (!miniquad_horizon_start(width,height)) { cleanup(); return 8; }
     // Runner start installs the handler only after native display and GL init.
-    lookingglass_horizon_entry();
+    if (!lookingglass_horizon_game_entry()) {
+        miniquad_horizon_stop();
+        cleanup();
+        return 11;
+    }
     int result=0;
     while (appletMainLoop()) {
         padUpdate(&g_pad);
-        const uint64_t down=padGetButtonsDown(&g_pad);
-        if (down & HidNpadButton_Plus) break;
         miniquad_horizon_frame();
         if (miniquad_horizon_should_quit()) break;
         if (!eglSwapBuffers(display,surface)) { (void)eglGetError(); result=9; break; }

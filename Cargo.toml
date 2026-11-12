@@ -6,6 +6,11 @@ rust-version = "1.86"
 publish = false
 description = "Local Rust compatibility research for user-supplied Alice game data"
 
+[lib]
+name = "looking_glass_horizon"
+path = "src/main.rs"
+crate-type = ["staticlib"]
+
 [dependencies]
 anyhow = "1.0"
 macroquad = "=0.4.14"
