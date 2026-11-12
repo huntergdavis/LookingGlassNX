@@ -8,12 +8,13 @@ map.
 ## Current candidate
 
 The C++ host opens the libnx applet window, initializes EGL with an OpenGL ES 2
-context, polls the standard controller through libnx, and calls Rust once per
-frame. Rust calls GLES2 `glClearColor` and `glClear` directly from the linked
-GLES2 library while EGL is current. Holding A selects green; the idle screen
-is blue. Plus exits `appletMainLoop`. A C++ scope guard tears down the EGL
-context, surface and display on normal exit and early returns after EGL
-initialization.
+context, queries the EGL surface size and sets the GLES2 viewport, then polls
+the standard controller through libnx. Each frame it asks a Rust helper to
+select blue or green RGBA, performs GLES2 `glClearColor`/`glClear` in the C++
+host, checks GL errors, and swaps with `eglSwapBuffers`. Holding A selects
+green; releasing A returns to blue. Plus exits `appletMainLoop`. A C++ scope
+guard tears down the EGL context, surface and display on normal exit and early
+returns after EGL initialization.
 
 This candidate deliberately does not instantiate Miniquad or Macroquad. The
 prior Miniquad `GlContext::begin_default_pass` approach was reviewed and found
@@ -34,17 +35,18 @@ the cached devkitPro-derived image
 `local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587`.
 The Rust cross-build and native NRO link completed successfully on candidate
 `codex/switch-boot-input-correction` at
-`47c392842f016b53158084f5c8f11d9debf8e47c`. The NRO is:
+`8c8407b31127d08d0c0d63fabf6fdcaa165cefef`. The NRO is:
 
 ```text
 switch/std-egl-spike/src.nro
 size:   5798085 bytes
-sha256: 3ac7ac3f69651430ab207b0f9eabec42566fd5be6765cabae5e0cf4bcfbfd4cd
+sha256: 597f95c6230003119d39a98f393c21bc9cc630f3f56db08446f7c4c798dc0a88
 ```
 
-The ELF exports `lookingglass_render_frame` and contains linked `glClear` and
-`glClearColor` implementations. The old `lookingglass_miniquad_*` and
-`lookingglass_path_components_smoke` helpers are absent.
+The ELF exports `lookingglass_boot_color` and contains linked `eglQuerySurface`,
+`eglSwapBuffers`, `glViewport`, `glClearColor`, `glClear`, and `glGetError`
+implementations. The old `lookingglass_miniquad_*`,
+`lookingglass_path_components_smoke`, and `getrandom` helpers are absent.
 
 The static link includes Rust `std`, libnx, Mesa EGL/GLES, libdrm, and
 devkitA64/Newlib runtime libraries. The artifact is for local review only: a
