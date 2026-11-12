@@ -12,8 +12,11 @@ application. The C++ side creates a libnx window, EGL display/surface and GLES2
 context, then obtains GL function pointers through `eglGetProcAddress`. Once
 that context is current, it calls Rust code that constructs Miniquad 0.4.8's
 public `GlContext`, begins and ends a default clear pass, and commits the frame.
-The Rust library also exercises `std::path::Path` and uses `getrandom` through
-the Switch CSRNG service.
+The C++ host swaps that Miniquad-rendered frame once, then waits in its own
+applet loop. That Plus/B exit loop is host plumbing; it does not bridge input
+into the Alice engine. The Rust library calls `std::path::Path::components()`
+to exercise a `std` API. It does not open or stat a filesystem path. It also
+uses `getrandom` through the Switch CSRNG service.
 
 The pinned nightly Rust toolchain cross-built the Rust static library. The
 cached local builder image `local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587`
@@ -22,20 +25,24 @@ then linked it with devkitPro/libnx, switch-mesa EGL, GLES2, and produced:
 ```text
 switch/std-egl-spike/src.nro
 size:   6129861 bytes
-sha256: a5bb8f1be54732b02ebe5218ae0db095d22a295120fbaff48a136311bba9e842
+sha256: c0b475615904e8b85f5d1151307d6f308875e4be25114ca736b3717424e1bb00
 ```
 
-The ELF symbol table contains `lookingglass_std_smoke`,
+The ELF symbol table contains `lookingglass_path_components_smoke`,
 `lookingglass_miniquad_smoke`, and the `getrandom` shim. This demonstrates a
 cross-build and link path for Rust `std` plus Miniquad's GL renderer under an
-externally-created EGL context. It does not show the NRO running, that pixels
-were displayed, or that Miniquad's integration works on a console.
+externally-created EGL context. The source now swaps the Miniquad clear frame,
+but this is still compiler/linker evidence: the NRO has not run, so no pixels
+were observed and Miniquad behavior on console is unverified.
 
 ## Rebuilding this spike
 
-Use writable, isolated copies of the pinned nightly toolchain and Cargo home.
-Apply the two checked-in patches to those copies, then build the Rust library
-and NRO:
+Run these commands from `switch/std-egl-spike/`. Start with writable, isolated
+copies of Rust nightly `nightly-2026-11-10` plus `rust-src` and Cargo home; do
+not patch the shared installed toolchain or Cargo cache. The builder image
+identified below must also be available. Patch `rust-src`, fetch the locked
+crate sources into the isolated Cargo home, then patch the extracted `libc`
+crate before compiling:
 
 ```sh
 export SPIKE_TC=/path/to/isolated/nightly-2026-11-10-x86_64-unknown-linux-gnu
@@ -46,10 +53,10 @@ export RUSTC_BOOTSTRAP=1
 
 patch -p1 -d "$SPIKE_TC/lib/rustlib/src/rust" \
   -i "$PWD/patches/rust-std-horizon.patch"
+cargo fetch --locked
 patch -p1 \
   -d "$CARGO_HOME/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.191" \
   -i "$PWD/patches/libc-0.2.191-aarch64-newlib.patch"
-cargo fetch --locked
 cargo clean
 cargo build --locked --release
 
@@ -59,9 +66,21 @@ docker run --rm -u "$(id -u):$(id -g)" \
   sh -lc 'make clean && make -j4'
 ```
 
+In this checkout's local validation setup, the isolated paths are
+`../../.spike/tooling/rustup/toolchains/nightly-2026-11-10-x86_64-unknown-linux-gnu`
+and `../../.spike/cargo`, relative to this directory.
+
 The local builder image is a cached devkitPro-derived image, not an image
 published by this project. Rebuilding on a clean host also requires making
-that exact image available there.
+that exact image available there. The Makefile declares the Rust archive as
+an ELF prerequisite so a rebuilt archive relinks the host without `make clean`.
+
+This is a local feasibility build, not a redistributable NRO. Its static link
+includes the Rust standard library and crate closure, libnx, Mesa EGL/GLES and
+libdrm, and devkitA64/newlib runtime libraries. Package metadata identifies
+some licenses, but a complete package-to-binary inventory and corresponding
+notices for this link closure have not been prepared. Audit that closure and
+resolve any missing notices before distributing an NRO.
 
 ## Compatibility changes needed by this toolchain
 
@@ -96,6 +115,11 @@ no Horizon branch, and the crate does not provide a Switch window, event loop,
 or controller backend. The game would need a maintained Horizon host/backend
 that drives frame timing and maps libnx input into the existing callbacks.
 Macroquad integration is not implemented here.
+
+The `std` call above is `Path::components()` only; filesystem reads, writes,
+metadata, and SD path behavior have not been tested. The Switch probe's
+Plus-button loop and this smoke host's Plus/B loop are also independent of the
+Alice input model.
 
 FlashNX documents a similar Rust `staticlib` + C++/libnx + newlib/EGL/GLES
 architecture, but it is a precedent rather than a drop-in: its Rust source

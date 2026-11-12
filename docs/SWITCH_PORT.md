@@ -62,11 +62,14 @@ service wrappers; the boring fallback is libnx FFI from a C/C++ host shim. The
 probe does not render through Macroquad, OpenGL, or a game map. The probe's
 source is `switch/toolchain-probe/src/main.rs`; it contains no Alice engine
 code or game data. Cargo locks `nx` to the exact repository revision above. Its
-MIT license, copyright notice, and the probe's complete target dependency
-inventory and license texts are recorded in
+MIT license, copyright notice, and the probe's target dependency inventory and
+available license texts are recorded in
 [`switch/toolchain-probe/THIRD_PARTY_NOTICES.txt`](../switch/toolchain-probe/THIRD_PARTY_NOTICES.txt).
-The `cargo-nx` host build tool is pinned separately and is not linked into the
-NRO.
+`atomic_enum` 0.3.0 declares MIT but has no packaged/upstream copyright notice;
+the notice file records this unresolved gap, which must be cleared before NRO
+distribution. The `cargo-nx` host build tool is pinned separately and is not
+linked into the NRO. The probe's `main.rs` was authored for this project from
+the pinned `nx` crate's public API; no code was copied from an `nx` example.
 
 Rebuild it with Rust nightly `nightly-2026-11-10` plus `rust-src`, and
 `cargo-nx` at `0dfe4a3ca6de4dcb0dfabed7dbfe9cacbbe21fcc`:

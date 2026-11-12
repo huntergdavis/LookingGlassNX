@@ -12,4 +12,3 @@ rustflags = [
 
 [unstable]
 build-std = ["std", "panic_abort", "core", "alloc", "compiler_builtins"]
-

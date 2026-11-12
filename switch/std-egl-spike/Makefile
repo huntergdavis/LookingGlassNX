@@ -204,7 +204,7 @@ $(OUTPUT).nso	:	$(OUTPUT).elf
 
 endif
 
-$(OUTPUT).elf	:	$(OFILES)
+$(OUTPUT).elf	:	$(OFILES) $(RUST_LIB)
 
 $(OFILES_SRC)	: $(HFILES_BIN)
 

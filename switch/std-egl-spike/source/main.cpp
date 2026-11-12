@@ -1,12 +1,10 @@
 #include <switch.h>
 #include <EGL/egl.h>
-#include <GLES2/gl2.h>
 #include <switch/services/csrng.h>
-#include <cstdint>
+#include <cstddef>
 #include <cerrno>
 #include <sys/types.h>
 
-extern "C" std::uint32_t lookingglass_std_smoke();
 extern "C" void lookingglass_miniquad_smoke();
 extern "C" void* lookingglass_get_proc_address(const char* name);
 extern "C" int lookingglass_fill_random(void* dest, std::size_t len);
@@ -33,7 +31,6 @@ extern "C" ssize_t getrandom(void* dest, std::size_t len, unsigned int flags) {
 
 int main(int, char**) {
     if (R_FAILED(csrngInitialize())) return 6;
-    const std::uint32_t std_probe_value = lookingglass_std_smoke();
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad{};
     padInitializeDefault(&pad);
@@ -58,14 +55,12 @@ int main(int, char**) {
     if (context == EGL_NO_CONTEXT || !eglMakeCurrent(display, surface, surface, context)) return 5;
 
     lookingglass_miniquad_smoke();
+    if (!eglSwapBuffers(display, surface)) return 7;
 
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & (HidNpadButton_Plus | HidNpadButton_B)) break;
-        glViewport(0, 0, 1280, 720);
-        glClearColor(0.08f, 0.18f, 0.38f + (std_probe_value & 1u) * 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        if (!eglSwapBuffers(display, surface)) break;
+        svcSleepThread(16'000'000);
     }
 
     eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

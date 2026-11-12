@@ -32,7 +32,7 @@ fn load_gl_proc(name: &str) -> Option<unsafe extern "C" fn()> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lookingglass_std_smoke() -> u32 {
+pub extern "C" fn lookingglass_path_components_smoke() -> u32 {
     let path = Path::new("sdmc:/switch/looking-glass/");
     path.components().count() as u32
 }
@@ -41,7 +41,8 @@ pub extern "C" fn lookingglass_std_smoke() -> u32 {
 pub extern "C" fn lookingglass_miniquad_smoke() {
     miniquad::gl::load_gl_funcs(load_gl_proc);
     let mut context = miniquad::GlContext::new();
-    context.begin_default_pass(miniquad::PassAction::clear_color(0.08, 0.18, 0.38, 1.0));
+    let blue = 0.38 + (lookingglass_path_components_smoke() & 1) as f32 * 0.1;
+    context.begin_default_pass(miniquad::PassAction::clear_color(0.08, 0.18, blue, 1.0));
     context.end_render_pass();
     context.commit_frame();
 }
