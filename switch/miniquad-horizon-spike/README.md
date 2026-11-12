@@ -32,6 +32,14 @@ CSRNG is initialized before the Rust entry and shut down after the game loop;
 the root Rust crate supplies getrandom 0.3/0.4's custom-backend hook. The
 service call's maximum chunk is not established by a device run.
 
+The host also provides Rust `std`'s two observed `sysconf` queries because
+libnx/newlib does not link its `sysconf` implementation here: `_SC_PAGESIZE`
+returns 4096 and `_SC_NPROCESSORS_ONLN` returns one worker conservatively.
+Compile-time assertions pin the newlib query values from the immutable builder
+headers (8 and 10); all other queries return `-1` with `EINVAL`. The shared
+mapping/errno helper has a host test, but target ABI and runtime behavior have
+not been exercised on hardware.
+
 Run commands from this directory so Cargo discovers `.cargo/config.toml`:
 
 ```sh
