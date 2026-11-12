@@ -12,11 +12,14 @@ backend fills, including mapped face/system buttons, triggers, and signed stick
 axes. No host-side pad keys are synthesized and the host does not consume Plus;
 Plus remains the engine Start/Escape action.
 
-On Horizon, the game reads user-supplied assets from
-`sdmc:/switch/alice-nx/game_root`. Saves and settings use the separate writable
-profile `sdmc:/switch/alice-nx/profile` (saves under its `saves/` child). The
-game-root directory is read-only from this path's perspective. The NRO does not
-embed user assets.
+On Horizon, set `LOOKING_GLASS_DATA_DIR` to a folder containing the original
+2011 PC Alice `.pk3` archives; the default is
+`sdmc:/switch/alice-nx/game-data`. The supplied `game_root` was found to contain
+an Xbox 360 Alice: Madness Returns layout, which this loader cannot use and
+does not modify. If the PC archives are missing, the NRO shows an on-screen
+message explaining the required format. Saves and settings use the separate
+writable profile `sdmc:/switch/alice-nx/profile` (saves under its `saves/`
+child). The NRO does not embed user assets.
 
 Miniquad requests GLES3 and preflights the 121 functions present in both its
 generated loader and the pinned GLES3 headers, plus the three VAO entry points
@@ -45,10 +48,12 @@ Run commands from this directory so Cargo discovers `.cargo/config.toml`:
 ```sh
 cargo check --manifest-path ../../Cargo.toml --lib --no-default-features --locked --offline
 cargo build --manifest-path ../../Cargo.toml --lib --release --no-default-features --locked --offline
-docker run --rm -v "$(pwd)/../..:/src" -w /src/switch/miniquad-horizon-spike local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587 make
+docker run --rm -v "$(pwd)/../..:/work" -w /work local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587 make -C /work/switch/miniquad-horizon-spike
 mkdir -p target/host
 rustc --edition=2018 --test ../../vendor/miniquad/src/native/horizon_pad.rs -o target/host/horizon-pad-tests
 target/host/horizon-pad-tests
+g++ -std=c++17 -Wall -Wextra -Werror tests/sysconf_test.cpp -o target/host/sysconf-test
+target/host/sysconf-test
 ```
 
 The build uses pinned nightly `nightly-2026-11-10` with the locally patched
