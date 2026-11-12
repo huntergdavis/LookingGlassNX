@@ -48,11 +48,12 @@ The ELF exports `lookingglass_boot_color` and contains linked `eglQuerySurface`,
 implementations. The old `lookingglass_miniquad_*`,
 `lookingglass_path_components_smoke`, and `getrandom` helpers are absent.
 
-The static link includes Rust `std`, libnx, Mesa EGL/GLES, libdrm, and
-devkitA64/Newlib runtime libraries. The artifact is for local review only: a
-complete package-to-binary license inventory and corresponding notices for the
-link closure have not been prepared. Do not distribute it until that audit is
-complete.
+The static link uses Rust `std`, libnx, Mesa EGL/GLES, and devkitA64/Newlib
+runtime libraries. The link command also supplies glapi and Nouveau DRM
+archives; the exact retained archive closure has not been inventoried. The
+artifact is for local review only: a complete package-to-binary license
+inventory and corresponding notices have not been prepared. Do not distribute
+it until that audit is complete.
 
 ## Rebuild
 
@@ -69,7 +70,9 @@ export RUSTC_BOOTSTRAP=1
 
 patch -p1 -d "$SPIKE_TC/lib/rustlib/src/rust" \
   -i "$PWD/patches/rust-std-horizon.patch"
-cargo fetch --locked
+# The app lockfile has no crate dependencies. Fetch build-std's locked sources
+# from the Rust library workspace so libc 0.2.191 is present for the patch.
+cargo fetch --manifest-path "$SPIKE_TC/lib/rustlib/src/rust/library/Cargo.toml" --locked
 patch -p1 \
   -d "$CARGO_HOME/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.191" \
   -i "$PWD/patches/libc-0.2.191-aarch64-newlib.patch"
