@@ -35,6 +35,20 @@ CSRNG is initialized before the Rust entry and shut down after the game loop;
 the root Rust crate supplies getrandom 0.3/0.4's custom-backend hook. The
 service call's maximum chunk is not established by a device run.
 
+Startup diagnostics are written best-effort to the first unused
+`sdmc:/switch/alice-nx/startup-diagnostic-NNN.log` path (created with
+exclusive-create; earlier logs are never truncated). Each event is flushed.
+The trace records the C host stages, EGL errors, first missing GL function,
+Miniquad/Rust entry and callback stages, `GL_VERSION`, first frame/swap, and
+the no-data screen's first submitted draw. The host clears and swaps once
+before Miniquad initialization, then exits with code 12 if `GL_VERSION` is
+still null. It requires a bounded printable-ASCII `OpenGL ES 3.*` version
+string and exits with code 13 otherwise; it does not guess a version. Failure
+to open or write the log does not change startup control flow. If no file is
+present, that can mean startup never reached `main` or diagnostic-file creation
+failed. No device run has yet verified that the log path is writable or that
+all events reach storage.
+
 The host also provides Rust `std`'s two observed `sysconf` queries because
 libnx/newlib does not link its `sysconf` implementation here: `_SC_PAGESIZE`
 returns 4096 and `_SC_NPROCESSORS_ONLN` returns one worker conservatively.

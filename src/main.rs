@@ -191,12 +191,26 @@ fn main() {
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
+    std::panic::set_hook(Box::new(|_| unsafe {
+        extern "C" { fn lg_horizon_diag(event: *const std::ffi::c_char); }
+        lg_horizon_diag(b"rust:panic\0".as_ptr().cast());
+    }));
+    horizon_diag("rust:game-entry-entered");
     match run() {
-        Ok(()) => true,
+        Ok(()) => { horizon_diag("rust:game-entry-accepted"); true },
         Err(error) => {
             eprintln!("Looking GlassNX: {error:#}");
+            horizon_diag("rust:game-entry-returned-error");
             false
         }
+    }
+}
+
+#[cfg(target_os = "horizon")]
+fn horizon_diag(event: &str) {
+    unsafe extern "C" { fn lg_horizon_diag(event: *const std::ffi::c_char); }
+    if let Ok(event) = std::ffi::CString::new(event) {
+        unsafe { lg_horizon_diag(event.as_ptr()); }
     }
 }
 
@@ -729,9 +743,15 @@ fn run() -> Result<()> {
                 "{error:#}. Looking GlassNX needs the original 2011 PC Alice PK3 archives in one folder. Set LOOKING_GLASS_DATA_DIR to that folder; Xbox 360 Alice: Madness Returns files are not compatible and were left untouched."
             );
             let data_dir = o.data.display().to_string();
+            #[cfg(target_os = "horizon")]
+            horizon_diag("rust:no-data-screen-scheduled");
             macroquad::Window::from_config(viewer::config(), async move {
                 let preferences = preferences::Preferences::load();
                 let mut input = input::Input::default();
+                #[cfg(target_os = "horizon")]
+                horizon_diag("rust:no-data-screen-callback-entered");
+                #[cfg(target_os = "horizon")]
+                let mut first_draw = true;
                 eprintln!("Looking GlassNX data error: {guidance}");
                 loop {
                     input.update(&preferences, true);
@@ -748,6 +768,11 @@ fn run() -> Result<()> {
                     macroquad::prelude::draw_text("This build requires the original 2011 PC Alice .pk3 archives.", 32.0, 164.0, 20.0, macroquad::prelude::WHITE);
                     macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to that folder. Xbox 360 data is incompatible.", 32.0, 200.0, 20.0, macroquad::prelude::WHITE);
                     macroquad::prelude::draw_text("Press B or Plus to exit.", 32.0, 236.0, 20.0, macroquad::prelude::WHITE);
+                    #[cfg(target_os = "horizon")]
+                    if first_draw {
+                        horizon_diag("rust:no-data-screen-first-draw-submitted");
+                        first_draw = false;
+                    }
                     macroquad::prelude::next_frame().await;
                 }
             });

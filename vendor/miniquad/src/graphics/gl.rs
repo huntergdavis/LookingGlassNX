@@ -819,10 +819,28 @@ impl GlContext {
 #[allow(clippy::field_reassign_with_default)]
 fn gl_info() -> ContextInfo {
     let version_string = unsafe { glGetString(super::gl::GL_VERSION) };
+    #[cfg(target_os = "horizon")]
+    if version_string.is_null() {
+        unsafe {
+            extern "C" { fn lg_horizon_diag(event: *const std::ffi::c_char); }
+            lg_horizon_diag(b"exit:gl-version-null-in-miniquad\0".as_ptr().cast());
+        }
+        panic!("Horizon GLES GL_VERSION remained null after bootstrap swap");
+    }
     let gl_version_string = unsafe { std::ffi::CStr::from_ptr(version_string as _) }
         .to_str()
         .unwrap()
         .to_string();
+    #[cfg(target_os = "horizon")]
+    {
+        let event = std::ffi::CString::new(format!("gl:GL_VERSION:{gl_version_string}"));
+        if let Ok(event) = event {
+            unsafe {
+                extern "C" { fn lg_horizon_diag(event: *const std::ffi::c_char); }
+                lg_horizon_diag(event.as_ptr());
+            }
+        }
+    }
     //let gles2 = !gles3 && gl_version_string.contains("OpenGL ES");
 
     let gl2 = gl_version_string.is_empty()

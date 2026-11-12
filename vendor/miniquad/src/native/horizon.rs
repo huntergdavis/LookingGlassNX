@@ -26,10 +26,17 @@ where F: 'static + FnOnce() -> Box<dyn EventHandler> {
 
 extern "C" {
     fn lg_egl_proc(name: *const c_char) -> *mut c_void;
+    fn lg_horizon_diag(event: *const c_char);
     fn lg_set_gl_viewport(width: i32, height: i32);
     fn lg_hid_buttons(index: u32, buttons: *mut u64) -> bool;
     fn lg_hid_axes(index: u32, lx: *mut i16, ly: *mut i16, rx: *mut i16, ry: *mut i16) -> bool;
     fn lg_hid_connected(index: u32) -> bool;
+}
+
+fn diag(event: &str) {
+    if let Ok(event) = std::ffi::CString::new(event) {
+        unsafe { lg_horizon_diag(event.as_ptr()); }
+    }
 }
 
 #[repr(C)]
@@ -73,6 +80,7 @@ pub extern "C" fn lookingglass_horizon_pad(index: u32, state: *mut RawState) -> 
 
 #[no_mangle]
 pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
+    diag("rust:miniquad-start-entered");
     if width <= 0 || height <= 0 { return false; }
     unsafe {
         let load = |name: &str| {
@@ -82,7 +90,10 @@ pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
         };
         // Reject a partial GLES implementation before Miniquad stores null procs.
         for required in GLES3_CORE_FUNCTIONS {
-            if load(required).is_none() { return false; }
+            if load(required).is_none() {
+                diag(&format!("exit:missing-gl-proc:{required}"));
+                return false;
+            }
         }
         crate::native::gl::load_gl_funcs(load);
         lg_set_gl_viewport(width, height);
@@ -100,12 +111,14 @@ pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
 
 #[no_mangle]
 pub extern "C" fn miniquad_horizon_attach(handler: *mut c_void) -> bool {
+    diag("rust:attach-entered");
     if handler.is_null() { return false; }
     let callback = unsafe { super::horizon_callback::from_opaque(handler) };
     HANDLER.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() { return false; }
         *slot = Some(callback());
+        diag("rust:callback-constructed");
         drain_native_requests();
         true
     })
@@ -135,6 +148,10 @@ pub extern "C" fn miniquad_horizon_frame() {
     drain_native_requests();
     HANDLER.with(|slot| {
         if let Some(handler) = slot.borrow_mut().as_mut() {
+            static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+            if FIRST_FRAME.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                diag("rust:first-frame-entered");
+            }
             handler.update();
             drain_native_requests();
             handler.draw();

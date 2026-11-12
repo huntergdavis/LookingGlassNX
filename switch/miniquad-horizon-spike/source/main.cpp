@@ -8,6 +8,9 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
 #include <sys/types.h>
 #include "sysconf_compat.h"
 
@@ -16,6 +19,20 @@ extern "C" void miniquad_horizon_frame();
 extern "C" void miniquad_horizon_stop();
 extern "C" bool miniquad_horizon_should_quit();
 extern "C" bool lookingglass_horizon_game_entry();
+extern "C" void lg_horizon_diag(const char* event);
+
+// Best-effort stdout + unique SD-card trace. Never truncate a previous run;
+// logging errors are intentionally ignored so diagnostics cannot change flow.
+static FILE* g_diag = nullptr;
+static void diag(const char* event) {
+    if (g_diag) { std::fprintf(g_diag, "%s\n", event); std::fflush(g_diag); }
+    std::printf("LGNX-DIAG %s\n", event);
+}
+
+extern "C" void lg_horizon_diag(const char* event) {
+    if (!event) return;
+    diag(event);
+}
 
 // newlib's libnx sysconf implementation is not linked on this target. Rust
 // std needs page size for thread stack alignment and online CPU count for its
@@ -89,11 +106,30 @@ extern "C" bool lg_hid_axes(uint32_t index, int16_t* lx, int16_t* ly, int16_t* r
 }
 
 int main(int, char**) {
-    if (!lg_csrng_init()) return 10;
+    // O_EXCL guarantees a rerun never overwrites any existing diagnostic.
+    for (unsigned int run = 0; run < 1000 && !g_diag; ++run) {
+        char path[96];
+        std::snprintf(path, sizeof(path), "sdmc:/switch/alice-nx/startup-diagnostic-%03u.log", run);
+        errno = 0;
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+        if (fd >= 0) {
+            g_diag = fdopen(fd, "w");
+            if (!g_diag) close(fd);
+            break;
+        }
+        if (errno != EEXIST) break;
+    }
+    diag("main:entered");
+    if (!lg_csrng_init()) { diag("exit:csrng-init-failed:10"); return 10; }
+    diag("csrng:ready");
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) { lg_csrng_shutdown(); return 1; }
+    if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) {
+        char event[64]; std::snprintf(event, sizeof(event), "exit:egl-initialize-failed:error=0x%04x:1", eglGetError()); diag(event);
+        lg_csrng_shutdown(); return 1;
+    }
+    diag("egl:initialized");
     EGLSurface surface = EGL_NO_SURFACE;
     EGLContext context = EGL_NO_CONTEXT;
     auto cleanup = [&]() {
@@ -103,33 +139,64 @@ int main(int, char**) {
         eglTerminate(display);
         lg_csrng_shutdown();
     };
-    if (!eglBindAPI(EGL_OPENGL_ES_API)) { cleanup(); return 2; }
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-bind-api:error=0x%04x:2",eglGetError()); diag(e); cleanup(); return 2; }
     const EGLint attrs[] = {EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_DEPTH_SIZE,24,EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES3_BIT,EGL_NONE};
     EGLConfig config{}; EGLint count=0;
-    if (!eglChooseConfig(display, attrs, &config, 1, &count) || count != 1) { cleanup(); return 3; }
+    if (!eglChooseConfig(display, attrs, &config, 1, &count) || count != 1) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-choose-config:error=0x%04x:count=%d:3",eglGetError(),count); diag(e); cleanup(); return 3; }
     surface=eglCreateWindowSurface(display,config,(EGLNativeWindowType)nwindowGetDefault(),nullptr);
-    if (surface==EGL_NO_SURFACE) { cleanup(); return 4; }
+    if (surface==EGL_NO_SURFACE) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-create-surface:error=0x%04x:4",eglGetError()); diag(e); cleanup(); return 4; }
+    diag("egl:surface-created");
     const EGLint context_attrs[]={EGL_CONTEXT_CLIENT_VERSION,3,EGL_NONE};
     context=eglCreateContext(display,config,EGL_NO_CONTEXT,context_attrs);
-    if (context==EGL_NO_CONTEXT || !eglMakeCurrent(display,surface,surface,context)) { cleanup(); return 5; }
+    if (context==EGL_NO_CONTEXT || !eglMakeCurrent(display,surface,surface,context)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-make-current:error=0x%04x:5",eglGetError()); diag(e); cleanup(); return 5; }
+    diag("egl:context-current");
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (!eglSwapBuffers(display, surface)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-bootstrap-swap-failed:error=0x%04x:9",eglGetError()); diag(e); cleanup(); return 9; }
+    diag("egl:bootstrap-swap-succeeded");
+    const GLubyte* version = glGetString(GL_VERSION);
+    if (!version) { diag("exit:gl-version-null-after-bootstrap-swap:12"); cleanup(); return 12; }
+    size_t version_length = 0;
+    while (version_length < 256 && version[version_length] != '\0') {
+        const unsigned char ch = version[version_length];
+        if (ch < 0x20 || ch > 0x7e) { diag("exit:invalid-gl-version-string:13"); cleanup(); return 13; }
+        ++version_length;
+    }
+    if (version_length == 0 || version_length == 256) { diag("exit:invalid-gl-version-string:13"); cleanup(); return 13; }
+    if (std::strncmp(reinterpret_cast<const char*>(version), "OpenGL ES 3.", 12) != 0) {
+        diag("exit:unsupported-gl-version:13"); cleanup(); return 13;
+    }
+    { char e[128]; std::snprintf(e, sizeof(e), "gl:GL_VERSION:%.*s", static_cast<int>(version_length), reinterpret_cast<const char*>(version)); diag(e); }
     EGLint width=0,height=0;
-    if (!eglQuerySurface(display,surface,EGL_WIDTH,&width) || !eglQuerySurface(display,surface,EGL_HEIGHT,&height) || width<=0 || height<=0) { cleanup(); return 6; }
-    if (!proc("glGenVertexArrays") || !proc("glBindVertexArray") || !proc("glDeleteVertexArrays")) { cleanup(); return 7; }
-    if (!miniquad_horizon_start(width,height)) { cleanup(); return 8; }
+    if (!eglQuerySurface(display,surface,EGL_WIDTH,&width) || !eglQuerySurface(display,surface,EGL_HEIGHT,&height) || width<=0 || height<=0) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-query-surface:error=0x%04x:size=%dx%d:6",eglGetError(),width,height); diag(e); cleanup(); return 6; }
+    { char e[64]; std::snprintf(e,sizeof(e),"egl:surface-size:%dx%d",width,height); diag(e); }
+    if (!proc("glGenVertexArrays")) { diag("exit:missing-gl-proc:glGenVertexArrays:7"); cleanup(); return 7; }
+    if (!proc("glBindVertexArray")) { diag("exit:missing-gl-proc:glBindVertexArray:7"); cleanup(); return 7; }
+    if (!proc("glDeleteVertexArrays")) { diag("exit:missing-gl-proc:glDeleteVertexArrays:7"); cleanup(); return 7; }
+    if (!miniquad_horizon_start(width,height)) { diag("exit:miniquad-start-or-gl-proc:8"); cleanup(); return 8; }
+    diag("miniquad:native-started");
     // Runner start installs the handler only after native display and GL init.
     if (!lookingglass_horizon_game_entry()) {
+        diag("exit:rust-entry-failed:11");
         miniquad_horizon_stop();
         cleanup();
         return 11;
     }
+    diag("rust:entry-accepted");
     int result=0;
+    bool first_frame = true;
+    bool first_swap = true;
     while (appletMainLoop()) {
         padUpdate(&g_pad);
         miniquad_horizon_frame();
+        if (first_frame) { diag("frame:first-draw-returned"); first_frame = false; }
         if (miniquad_horizon_should_quit()) break;
-        if (!eglSwapBuffers(display,surface)) { (void)eglGetError(); result=9; break; }
+        if (!eglSwapBuffers(display,surface)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-swap-failed:error=0x%04x:9",eglGetError()); diag(e); result=9; break; }
+        if (first_swap) { diag("frame:first-swap-succeeded"); first_swap = false; }
     }
     miniquad_horizon_stop();
+    diag("exit:host-loop-finished");
     cleanup();
+    if (g_diag) { std::fclose(g_diag); g_diag = nullptr; }
     return result;
 }
