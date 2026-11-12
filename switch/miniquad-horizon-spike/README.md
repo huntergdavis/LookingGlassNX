@@ -61,6 +61,13 @@ clear, or dimensions beyond the viewport limit are logged and fail startup.
 This follows the Switch reference's native-window dimension query. This source
 change has not yet been built or device-verified.
 
+The next diagnostic source adds fixed markers around Horizon callback pointer
+reconstruction, handler thread-local access, callback invocation, and the first
+Miniquad GL framebuffer/VAO/version calls. These markers narrow the interval
+reported by diagnostic run 002; a missing marker is not proof of the exact
+failure point because SD logging is best-effort. No new build or device result
+exists for this instrumentation.
+
 The host also provides Rust `std`'s two observed `sysconf` queries because
 libnx/newlib does not link its `sysconf` implementation here: `_SC_PAGESIZE`
 returns 4096 and `_SC_NPROCESSORS_ONLN` returns one worker conservatively.

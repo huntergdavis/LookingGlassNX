@@ -21,7 +21,12 @@ where F: 'static + FnOnce() -> Box<dyn EventHandler> {
     extern "C" { fn miniquad_horizon_attach(handler: *mut c_void) -> bool; }
     let callback: super::horizon_callback::HorizonCallback = Box::new(f);
     let raw = super::horizon_callback::into_opaque(callback);
-    assert!(miniquad_horizon_attach(raw), "Horizon host rejected Miniquad callback");
+    diag_static(b"rust:attach-call-entered\0");
+    if !miniquad_horizon_attach(raw) {
+        diag_static(b"rust:attach-call-rejected\0");
+        panic!("Horizon host rejected Miniquad callback");
+    }
+    diag_static(b"rust:attach-call-returned\0");
 }
 
 extern "C" {
@@ -36,6 +41,12 @@ extern "C" {
 fn diag(event: &str) {
     if let Ok(event) = std::ffi::CString::new(event) {
         unsafe { lg_horizon_diag(event.as_ptr()); }
+    }
+}
+
+pub(crate) fn diag_static(event: &'static [u8]) {
+    if event.last() == Some(&0) {
+        unsafe { lg_horizon_diag(event.as_ptr().cast()); }
     }
 }
 
@@ -111,15 +122,29 @@ pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
 
 #[no_mangle]
 pub extern "C" fn miniquad_horizon_attach(handler: *mut c_void) -> bool {
-    diag("rust:attach-entered");
-    if handler.is_null() { return false; }
+    diag_static(b"rust:attach-entered\0");
+    if handler.is_null() {
+        diag_static(b"attach:handler-pointer-null\0");
+        return false;
+    }
+    diag_static(b"attach:handler-pointer-valid\0");
     let callback = unsafe { super::horizon_callback::from_opaque(handler) };
+    diag_static(b"attach:opaque-callback-reconstructed\0");
     HANDLER.with(|slot| {
+        diag_static(b"attach:handler-tls-entered\0");
         let mut slot = slot.borrow_mut();
-        if slot.is_some() { return false; }
-        *slot = Some(callback());
-        diag("rust:callback-constructed");
+        diag_static(b"attach:handler-slot-borrowed\0");
+        if slot.is_some() {
+            diag_static(b"attach:handler-slot-already-set\0");
+            return false;
+        }
+        diag_static(b"attach:before-callback-invoke\0");
+        let handler = callback();
+        diag_static(b"attach:callback-returned\0");
+        *slot = Some(handler);
+        diag_static(b"attach:handler-stored\0");
         drain_native_requests();
+        diag_static(b"attach:native-requests-drained\0");
         true
     })
 }

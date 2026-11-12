@@ -7,6 +7,11 @@ mod cache;
 use super::*;
 use cache::*;
 
+#[cfg(target_os = "horizon")]
+fn horizon_diag(event: &'static [u8]) {
+    crate::native::horizon::diag_static(event);
+}
+
 /// Raw OpenGL bindings
 /// Highly unsafe, some of the functions could be missing due to incompatible GL version
 /// or all of them might be missing alltogether if rendering context is not a GL one.
@@ -529,17 +534,35 @@ impl Default for GlContext {
 
 impl GlContext {
     pub fn new() -> GlContext {
+        #[cfg(target_os = "horizon")]
+        horizon_diag(b"gl-context:new-entered\0");
         unsafe {
             let mut default_framebuffer: GLuint = 0;
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:before-framebuffer-query\0");
             glGetIntegerv(
                 GL_FRAMEBUFFER_BINDING,
                 &mut default_framebuffer as *mut _ as *mut _,
             );
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:framebuffer-query-returned\0");
             let mut vao = 0;
 
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:before-vao-generate\0");
             glGenVertexArrays(1, &mut vao as *mut _);
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:vao-generate-returned\0");
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:before-vao-bind\0");
             glBindVertexArray(vao);
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:vao-bind-returned\0");
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:before-gl-info\0");
             let info = gl_info();
+            #[cfg(target_os = "horizon")]
+            horizon_diag(b"gl-context:gl-info-returned\0");
             GlContext {
                 default_framebuffer,
                 shaders: ResourceManager::default(),
@@ -818,7 +841,11 @@ impl GlContext {
 
 #[allow(clippy::field_reassign_with_default)]
 fn gl_info() -> ContextInfo {
+    #[cfg(target_os = "horizon")]
+    horizon_diag(b"gl-info:before-version-query\0");
     let version_string = unsafe { glGetString(super::gl::GL_VERSION) };
+    #[cfg(target_os = "horizon")]
+    horizon_diag(b"gl-info:version-query-returned\0");
     #[cfg(target_os = "horizon")]
     if version_string.is_null() {
         unsafe {
@@ -827,10 +854,14 @@ fn gl_info() -> ContextInfo {
         }
         panic!("Horizon GLES GL_VERSION remained null after bootstrap swap");
     }
+    #[cfg(target_os = "horizon")]
+    horizon_diag(b"gl-info:before-version-decode\0");
     let gl_version_string = unsafe { std::ffi::CStr::from_ptr(version_string as _) }
         .to_str()
         .unwrap()
         .to_string();
+    #[cfg(target_os = "horizon")]
+    horizon_diag(b"gl-info:version-decoded\0");
     #[cfg(target_os = "horizon")]
     {
         let event = std::ffi::CString::new(format!("gl:GL_VERSION:{gl_version_string}"));
