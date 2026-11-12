@@ -793,9 +793,11 @@ impl Menu {
                 if self.post_game || self.frontend {
                     buttons.pop();
                 }
-                buttons.push(Button::text(
-                    Rect::new(18., 410., 150., 36.), "Co-op", Click::Action(Action::Coop),
-                ));
+                if !cfg!(target_os = "horizon") {
+                    buttons.push(Button::text(
+                        Rect::new(18., 410., 150., 36.), "Co-op", Click::Action(Action::Coop),
+                    ));
+                }
                 buttons
             }
             Page::Settings => {
@@ -1693,7 +1695,10 @@ impl Menu {
                     }
                     let click = if page == Page::Main && input.ui(KeyCode::Tab) {
                         Some(Click::Action(Action::Chapters))
-                    } else if page == Page::Main && is_key_pressed(KeyCode::C) {
+                    } else if page == Page::Main
+                        && !cfg!(target_os = "horizon")
+                        && is_key_pressed(KeyCode::C)
+                    {
                         Some(Click::Action(Action::Coop))
                     } else if input.ui(KeyCode::Escape) {
                         Some(Click::Back)

@@ -263,6 +263,11 @@ fn run() -> Result<()> {
     let mut movie_name = String::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            #[cfg(target_os = "horizon")]
+            "--coop-host" | "--coop-join" => {
+                anyhow::bail!("Co-op is disabled on Horizon until worker shutdown is coordinated");
+            }
+            #[cfg(not(target_os = "horizon"))]
             "--coop-host" | "--coop-join" => {
                 o.coop = Some(coop::preview::Launch { host: arg == "--coop-host", internet: true,
                     invite_file: Some(args.next().context("Co-op requires an invite file")?.into()),

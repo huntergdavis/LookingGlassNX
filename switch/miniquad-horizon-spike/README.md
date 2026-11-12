@@ -43,6 +43,11 @@ headers (8 and 10); all other queries return `-1` with `EINVAL`. The shared
 mapping/errno helper has a host test, but target ABI and runtime behavior have
 not been exercised on hardware.
 
+Co-op CLI launch and the main-menu entry are disabled on Horizon for this
+candidate. The current co-op path can leave detached worker tasks active, and
+their quiescence is not yet established before EGL and CSRNG teardown. Desktop
+co-op behavior remains enabled.
+
 Run commands from this directory so Cargo discovers `.cargo/config.toml`:
 
 ```sh
