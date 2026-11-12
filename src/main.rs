@@ -645,6 +645,7 @@ fn run() -> Result<()> {
     let mut assets = match Assets::open(&o.data) {
         Ok(assets) => assets,
         Err(error) if cfg!(target_os = "horizon") => {
+            let reason = error.to_string().chars().take(96).collect::<String>();
             let guidance = format!(
                 "{error:#}. Looking GlassNX needs the original 2011 PC Alice PK3 archives in one folder. Set LOOKING_GLASS_DATA_DIR to that folder; Xbox 360 Alice: Madness Returns files are not compatible and were left untouched."
             );
@@ -662,11 +663,12 @@ fn run() -> Result<()> {
                         break;
                     }
                     macroquad::prelude::clear_background(macroquad::prelude::BLACK);
-                    macroquad::prelude::draw_text("Unable to open compatible Alice game data", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text(&format!("Check the data folder: {data_dir}"), 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("This build requires the original 2011 PC Alice .pk3 archives.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to that folder. Xbox 360 data is incompatible.", 32.0, 168.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Press B or Plus to exit.", 32.0, 204.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Unable to load game data", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text(&format!("Data folder: {data_dir}"), 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text(&format!("Reason: {reason}"), 32.0, 128.0, 18.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("This build requires the original 2011 PC Alice .pk3 archives.", 32.0, 164.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to that folder. Xbox 360 data is incompatible.", 32.0, 200.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Press B or Plus to exit.", 32.0, 236.0, 20.0, macroquad::prelude::WHITE);
                     macroquad::prelude::next_frame().await;
                 }
             });
