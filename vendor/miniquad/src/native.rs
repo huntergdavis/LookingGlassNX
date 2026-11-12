@@ -92,6 +92,12 @@ pub mod android;
 #[cfg(target_os = "horizon")]
 pub mod horizon;
 
+#[cfg(any(target_os = "horizon", test))]
+mod horizon_callback;
+
+#[cfg(any(target_os = "horizon", test))]
+mod horizon_requests;
+
 #[cfg(target_os = "windows")]
 pub mod windows;
 

@@ -2,7 +2,6 @@
 use crate::{conf::Conf, event::EventHandler, native::NativeDisplayData};
 use super::horizon_pad::{map_horizon_buttons, map_horizon_triggers};
 use std::{cell::RefCell, ffi::{c_char, c_void}};
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 thread_local! {
     // Horizon's libnx loop and Miniquad callbacks run on the same main thread.
@@ -15,12 +14,13 @@ static PAD_STATE: std::sync::Mutex<RawPad> = std::sync::Mutex::new(RawPad {
 });
 // Keep the receiver alive for the lifetime of the display. Miniquad's public
 // window APIs send through NativeDisplayData::native_requests and unwrap.
-static NATIVE_REQUESTS: std::sync::Mutex<Option<Receiver<crate::native::Request>>> = std::sync::Mutex::new(None);
+static NATIVE_REQUESTS: std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::native::Request>>> = std::sync::Mutex::new(None);
 
 pub unsafe fn run<F>(_conf: Conf, f: F)
 where F: 'static + FnOnce() -> Box<dyn EventHandler> {
     extern "C" { fn miniquad_horizon_attach(handler: *mut c_void) -> bool; }
-    let raw = Box::into_raw(Box::new(f)) as *mut c_void;
+    let callback: super::horizon_callback::HorizonCallback = Box::new(f);
+    let raw = super::horizon_callback::into_opaque(callback);
     assert!(miniquad_horizon_attach(raw), "Horizon host rejected Miniquad callback");
 }
 
@@ -101,8 +101,7 @@ pub extern "C" fn miniquad_horizon_start(width: i32, height: i32) -> bool {
 #[no_mangle]
 pub extern "C" fn miniquad_horizon_attach(handler: *mut c_void) -> bool {
     if handler.is_null() { return false; }
-    type Callback = Box<dyn FnOnce() -> Box<dyn EventHandler>>;
-    let callback = unsafe { Box::from_raw(handler as *mut Callback) };
+    let callback = unsafe { super::horizon_callback::from_opaque(handler) };
     HANDLER.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() { return false; }
@@ -147,41 +146,7 @@ pub extern "C" fn miniquad_horizon_frame() {
 fn drain_native_requests() {
     let requests = NATIVE_REQUESTS.lock().unwrap();
     let Some(receiver) = requests.as_ref() else { return; };
-    consume_native_requests(receiver);
-}
-
-fn consume_native_requests(receiver: &Receiver<crate::native::Request>) {
-    loop {
-        match receiver.try_recv() {
-            Ok(crate::native::Request::SetFullscreen(_)) => {},
-            Ok(crate::native::Request::ScheduleUpdate
-                | crate::native::Request::SetCursorGrab(_)
-                | crate::native::Request::ShowMouse(_)
-                | crate::native::Request::SetMouseCursor(_)
-                | crate::native::Request::SetWindowSize { .. }
-                | crate::native::Request::SetWindowPosition { .. }
-                | crate::native::Request::ShowKeyboard(_)) => {},
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-        }
-    }
-}
-
-#[cfg(test)]
-mod native_request_tests {
-    use super::*;
-    use std::sync::mpsc;
-
-    #[test]
-    fn display_requests_remain_sendable_and_are_drained() {
-        let (tx, rx) = mpsc::channel();
-        tx.send(crate::native::Request::SetFullscreen(true)).unwrap();
-        tx.send(crate::native::Request::SetWindowSize { new_width: 800, new_height: 600 }).unwrap();
-        tx.send(crate::native::Request::ShowMouse(false)).unwrap();
-        consume_native_requests(&rx);
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        tx.send(crate::native::Request::SetCursorGrab(false)).unwrap();
-        consume_native_requests(&rx);
-    }
+    crate::native::horizon_requests::drain(receiver);
 }
 
 #[no_mangle]

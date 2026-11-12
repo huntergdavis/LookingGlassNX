@@ -54,6 +54,10 @@ rustc --edition=2018 --test ../../vendor/miniquad/src/native/horizon_pad.rs -o t
 target/host/horizon-pad-tests
 g++ -std=c++17 -Wall -Wextra -Werror tests/sysconf_test.cpp -o target/host/sysconf-test
 target/host/sysconf-test
+rustc --edition=2021 --test tests/horizon_callback_harness.rs -o target/host/horizon-callback-tests
+target/host/horizon-callback-tests
+rustc --edition=2021 --test tests/horizon_requests_harness.rs -o target/host/horizon-request-tests
+target/host/horizon-request-tests
 ```
 
 The build uses pinned nightly `nightly-2026-11-10` with the locally patched

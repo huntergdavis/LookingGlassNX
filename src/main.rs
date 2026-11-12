@@ -648,13 +648,24 @@ fn run() -> Result<()> {
             let guidance = format!(
                 "{error:#}. Looking GlassNX needs the original 2011 PC Alice PK3 archives in one folder. Set LOOKING_GLASS_DATA_DIR to that folder; Xbox 360 Alice: Madness Returns files are not compatible and were left untouched."
             );
+            let data_dir = o.data.display().to_string();
             macroquad::Window::from_config(viewer::config(), async move {
+                let preferences = preferences::Preferences::load();
+                let mut input = input::Input::default();
                 eprintln!("Looking GlassNX data error: {guidance}");
                 loop {
+                    input.update(&preferences, true);
+                    if input.pad_pressed("Start")
+                        || input.pad_pressed("B")
+                        || macroquad::prelude::is_key_pressed(macroquad::prelude::KeyCode::Escape)
+                    {
+                        break;
+                    }
                     macroquad::prelude::clear_background(macroquad::prelude::BLACK);
                     macroquad::prelude::draw_text("2011 PC Alice PK3 data required", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to the folder containing the original PC .pk3 files.", 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Xbox 360 Alice: Madness Returns data is not compatible.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text(&format!("No compatible PK3 archives found at {data_dir}"), 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to the folder containing the original PC .pk3 files.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Xbox 360 Alice: Madness Returns data is not compatible. Press B or Plus to exit.", 32.0, 168.0, 20.0, macroquad::prelude::WHITE);
                     macroquad::prelude::next_frame().await;
                 }
             });
