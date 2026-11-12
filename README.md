@@ -199,6 +199,7 @@ and bug-report requirements. Development shortcuts are under
 - [Code signing policy and privacy](docs/CODE_SIGNING.md) — application awaiting review; current preview unsigned
 - [Earlier development notes](docs/DEVELOPMENT_HISTORY.md)
 - [Nintendo Switch port investigation and NRO probe](docs/SWITCH_PORT.md)
+- [Switch Rust std/newlib and EGL/Miniquad host spike](docs/SWITCH_STD_EGL_SPIKE.md)
 
 ## License and independence
 
