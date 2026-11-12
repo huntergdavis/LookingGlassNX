@@ -14,6 +14,11 @@
 #include <sys/types.h>
 #include "sysconf_compat.h"
 
+static_assert(std::numeric_limits<EGLint>::max() == std::numeric_limits<int>::max(),
+              "EGLint and viewport argument ranges must match on Switch");
+static_assert(std::numeric_limits<GLsizei>::max() == std::numeric_limits<int>::max(),
+              "GLsizei and viewport argument ranges must match on Switch");
+
 extern "C" bool miniquad_horizon_start(int width, int height);
 extern "C" void miniquad_horizon_frame();
 extern "C" void miniquad_horizon_stop();
@@ -124,6 +129,7 @@ int main(int, char**) {
     diag("csrng:ready");
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&g_pad);
+    NWindow* window = nwindowGetDefault();
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) {
         char event[64]; std::snprintf(event, sizeof(event), "exit:egl-initialize-failed:error=0x%04x:1", eglGetError()); diag(event);
@@ -143,7 +149,7 @@ int main(int, char**) {
     const EGLint attrs[] = {EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_DEPTH_SIZE,24,EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES3_BIT,EGL_NONE};
     EGLConfig config{}; EGLint count=0;
     if (!eglChooseConfig(display, attrs, &config, 1, &count) || count != 1) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-choose-config:error=0x%04x:count=%d:3",eglGetError(),count); diag(e); cleanup(); return 3; }
-    surface=eglCreateWindowSurface(display,config,(EGLNativeWindowType)nwindowGetDefault(),nullptr);
+    surface=eglCreateWindowSurface(display,config,(EGLNativeWindowType)window,nullptr);
     if (surface==EGL_NO_SURFACE) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-create-surface:error=0x%04x:4",eglGetError()); diag(e); cleanup(); return 4; }
     diag("egl:surface-created");
     const EGLint context_attrs[]={EGL_CONTEXT_CLIENT_VERSION,3,EGL_NONE};
@@ -152,6 +158,12 @@ int main(int, char**) {
     diag("egl:context-current");
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
+    const GLenum clear_error=glGetError();
+    if (clear_error != GL_NO_ERROR) {
+        char e[80]; std::snprintf(e,sizeof(e),"exit:bootstrap-clear-gl-error:0x%04x:14",clear_error);
+        diag(e); cleanup(); return 14;
+    }
+    diag("gl:bootstrap-clear-no-error");
     if (!eglSwapBuffers(display, surface)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-bootstrap-swap-failed:error=0x%04x:9",eglGetError()); diag(e); cleanup(); return 9; }
     diag("egl:bootstrap-swap-succeeded");
     const GLubyte* version = glGetString(GL_VERSION);
@@ -167,13 +179,49 @@ int main(int, char**) {
         diag("exit:unsupported-gl-version:13"); cleanup(); return 13;
     }
     { char e[128]; std::snprintf(e, sizeof(e), "gl:GL_VERSION:%.*s", static_cast<int>(version_length), reinterpret_cast<const char*>(version)); diag(e); }
+    GLint max_viewport[2]={0,0};
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS,max_viewport);
+    const GLenum viewport_error=glGetError();
+    if (viewport_error != GL_NO_ERROR || max_viewport[0] <= 0 || max_viewport[1] <= 0) {
+        char e[112]; std::snprintf(e,sizeof(e),"exit:viewport-limits-invalid:error=0x%04x:max=%dx%d:15",
+                                   viewport_error,max_viewport[0],max_viewport[1]);
+        diag(e); cleanup(); return 15;
+    }
+    { char e[80]; std::snprintf(e,sizeof(e),"gl:max-viewport:%dx%d",max_viewport[0],max_viewport[1]); diag(e); }
     EGLint width=0,height=0;
-    if (!eglQuerySurface(display,surface,EGL_WIDTH,&width) || !eglQuerySurface(display,surface,EGL_HEIGHT,&height) || width<=0 || height<=0) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-query-surface:error=0x%04x:size=%dx%d:6",eglGetError(),width,height); diag(e); cleanup(); return 6; }
-    { char e[64]; std::snprintf(e,sizeof(e),"egl:surface-size:%dx%d",width,height); diag(e); }
+    const EGLBoolean width_query_ok=eglQuerySurface(display,surface,EGL_WIDTH,&width);
+    const EGLint width_query_error=width_query_ok ? EGL_SUCCESS : eglGetError();
+    const EGLBoolean height_query_ok=eglQuerySurface(display,surface,EGL_HEIGHT,&height);
+    const EGLint height_query_error=height_query_ok ? EGL_SUCCESS : eglGetError();
+    { char e[96]; std::snprintf(e,sizeof(e),"egl:query-width:ok=%u:value=%d:error=0x%04x",static_cast<unsigned>(width_query_ok),width,width_query_error); diag(e); }
+    { char e[96]; std::snprintf(e,sizeof(e),"egl:query-height:ok=%u:value=%d:error=0x%04x",static_cast<unsigned>(height_query_ok),height,height_query_error); diag(e); }
+    const bool egl_size_usable = width_query_ok && height_query_ok && width > 0 && height > 0 &&
+        width <= std::numeric_limits<int>::max() && height <= std::numeric_limits<int>::max();
+    if (!egl_size_usable) {
+        u32 native_width=0,native_height=0;
+        const Result native_size_result=nwindowGetDimensions(window,&native_width,&native_height);
+        if (R_FAILED(native_size_result) || native_width == 0 || native_height == 0 ||
+            native_width > static_cast<u32>(std::numeric_limits<int>::max()) ||
+            native_height > static_cast<u32>(std::numeric_limits<int>::max())) {
+            char e[128];
+            std::snprintf(e,sizeof(e),"exit:native-window-size-invalid:result=0x%08x:size=%ux%u",native_size_result,native_width,native_height);
+            diag(e); cleanup(); return 6;
+        }
+        width=static_cast<EGLint>(native_width);
+        height=static_cast<EGLint>(native_height);
+        { char e[96]; std::snprintf(e,sizeof(e),"window:viewport-source=nwindowGetDimensions:size=%dx%d",width,height); diag(e); }
+    } else {
+        diag("window:viewport-source=eglQuerySurface");
+    }
+    if (width > max_viewport[0] || height > max_viewport[1]) {
+        char e[112]; std::snprintf(e,sizeof(e),"exit:viewport-size-exceeds-limit:size=%dx%d:max=%dx%d:16",
+                                   width,height,max_viewport[0],max_viewport[1]);
+        diag(e); cleanup(); return 16;
+    }
     if (!proc("glGenVertexArrays")) { diag("exit:missing-gl-proc:glGenVertexArrays:7"); cleanup(); return 7; }
     if (!proc("glBindVertexArray")) { diag("exit:missing-gl-proc:glBindVertexArray:7"); cleanup(); return 7; }
     if (!proc("glDeleteVertexArrays")) { diag("exit:missing-gl-proc:glDeleteVertexArrays:7"); cleanup(); return 7; }
-    if (!miniquad_horizon_start(width,height)) { diag("exit:miniquad-start-or-gl-proc:8"); cleanup(); return 8; }
+    if (!miniquad_horizon_start(static_cast<int>(width),static_cast<int>(height))) { diag("exit:miniquad-start-or-gl-proc:8"); cleanup(); return 8; }
     diag("miniquad:native-started");
     // Runner start installs the handler only after native display and GL init.
     if (!lookingglass_horizon_game_entry()) {

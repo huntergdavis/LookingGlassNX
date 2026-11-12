@@ -49,6 +49,18 @@ present, that can mean startup never reached `main` or diagnostic-file creation
 failed. No device run has yet verified that the log path is writable or that
 all events reach storage.
 
+The first diagnostic run reached EGL setup and took the surface-size failure
+path with logged values `0x0` and error `EGL_SUCCESS`; that older combined
+check does not identify each query's individual result. The host now logs each
+EGL dimension query and uses the same `NWindow`'s
+`nwindowGetDimensions` result only when either EGL dimension is unavailable or
+nonpositive. It validates the libnx result, positive dimensions, and `EGLint`
+and `int` range after EGL surface creation, then checks the selected size
+against `GL_MAX_VIEWPORT_DIMS`. Invalid limits, GL errors during the bootstrap
+clear, or dimensions beyond the viewport limit are logged and fail startup.
+This follows the Switch reference's native-window dimension query. This source
+change has not yet been built or device-verified.
+
 The host also provides Rust `std`'s two observed `sysconf` queries because
 libnx/newlib does not link its `sysconf` implementation here: `_SC_PAGESIZE`
 returns 4096 and `_SC_NPROCESSORS_ONLN` returns one worker conservatively.
