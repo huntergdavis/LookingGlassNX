@@ -94,6 +94,24 @@ This is compiler and packaging evidence only. The NRO has **not** been started
 on a Switch; display, controller, exit, suspend, memory, and frame timing remain
 unverified on hardware. This run did not include a Switch console.
 
+## Full-game Horizon source-check slice
+
+On the follow-up branch based on the accepted EGL spike, the co-op client's
+native TLS dependency is controlled by the default-on `coop-tls` Cargo feature.
+The Switch configuration can use `--no-default-features`, which retains plain
+WebSocket co-op but rejects `wss://` invites with an explicit unavailable
+message. Desktop TLS remains enabled by default.
+
+Using the same locally patched nightly `std` and `libc` copies described in
+[`SWITCH_STD_EGL_SPIKE.md`](SWITCH_STD_EGL_SPIKE.md), the complete game crate
+passed `cargo check` for `aarch64-nintendo-switch-freestanding` with TLS
+disabled. `rodio`/`cpal`, Macroquad/Miniquad, and the application source all
+type-checked. `cargo tree --no-default-features -i openssl-sys` returned no
+matching package. This removes the OpenSSL/native-TLS compile blocker; it does
+not establish a linked game binary, a Horizon Miniquad event/input backend, or
+playability. The separate local EGL spike remains a linker-only feasibility
+artifact, and no device or redistribution validation is claimed.
+
 ## Smallest next playable milestone
 
 Keep the upstream Rust recreation and PK3 loader. First establish a supported

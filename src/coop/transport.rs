@@ -18,7 +18,6 @@ use tungstenite::{
     handshake::server::{ErrorResponse, Request, Response},
     http::{header, StatusCode},
     protocol::WebSocketConfig,
-    stream::MaybeTlsStream,
     Error, Message, WebSocket,
 };
 
@@ -372,6 +371,10 @@ fn resolve_with_retry(
 /// the handle with TcpStream::try_clone can make concurrent shutdown return
 /// WSAENOTCONN on Windows even though the worker's connection remains open.
 struct ConnectStream(Arc<TcpStream>);
+#[cfg(feature = "coop-tls")]
+type ConnectSocket = MaybeTlsStream<ConnectStream>;
+#[cfg(not(feature = "coop-tls"))]
+type ConnectSocket = ConnectStream;
 impl Read for ConnectStream {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         (&*self.0).read(buffer)
@@ -385,6 +388,9 @@ impl Write for ConnectStream {
         (&*self.0).flush()
     }
 }
+
+#[cfg(feature = "coop-tls")]
+use tungstenite::stream::MaybeTlsStream;
 
 struct ConnectingSocket<'a>(&'a Shared);
 impl<'a> ConnectingSocket<'a> {
@@ -408,13 +414,17 @@ fn valid_probe(bytes: &[u8]) -> bool {
 }
 
 fn connect(invite: &Invite, shared: &Shared, readiness: bool)
-    -> Result<Option<WebSocket<MaybeTlsStream<ConnectStream>>>> {
+    -> Result<Option<WebSocket<ConnectSocket>>> {
     let url = invite.websocket_url();
     let uri: tungstenite::http::Uri = url.parse()?;
     let host = uri
         .host()
         .context("Invite host is missing")?
         .trim_matches(['[', ']']);
+    if uri.scheme_str() == Some("wss") {
+        #[cfg(not(feature = "coop-tls"))]
+        bail!("Secure co-op is unavailable in this build.");
+    }
     let port = uri
         .port_u16()
         .unwrap_or(if uri.scheme_str() == Some("wss") {
@@ -454,7 +464,19 @@ fn connect(invite: &Invite, shared: &Shared, readiness: bool)
         request.headers_mut().insert(READY_PROBE, value.parse()?);
         Some(value)
     } else { None };
-    let result = tungstenite::client_tls_with_config(request, ConnectStream(stream), Some(config(MAX_STATE)), None);
+    #[cfg(feature = "coop-tls")]
+    let result = tungstenite::client_tls_with_config(
+        request,
+        ConnectStream(stream),
+        Some(config(MAX_STATE)),
+        None,
+    );
+    #[cfg(not(feature = "coop-tls"))]
+    let result = tungstenite::client::client_with_config(
+        request,
+        ConnectStream(stream),
+        Some(config(MAX_STATE)),
+    );
     anyhow::ensure!(!shared.stopped(), "Connection cancelled");
     if let (Some(challenge), Err(tungstenite::HandshakeError::Failure(Error::Http(response)))) = (&challenge, &result) {
         if response.status() == StatusCode::CONFLICT
@@ -469,6 +491,7 @@ fn connect(invite: &Invite, shared: &Shared, readiness: bool)
                     tungstenite::HandshakeError::Failure(Error::Http(response)) => {
                         format!("The host returned HTTP {}.", response.status().as_u16())
                     }
+                    #[cfg(feature = "coop-tls")]
                     tungstenite::HandshakeError::Failure(Error::Tls(_)) => {
                         "The secure connection could not be verified.".to_owned()
                     }
@@ -488,11 +511,15 @@ fn connect(invite: &Invite, shared: &Shared, readiness: bool)
             == Some(PROTOCOL),
         "The invite does not point to a compatible Looking Glass host."
     );
+    #[cfg(feature = "coop-tls")]
     match socket.get_ref() {
         MaybeTlsStream::Plain(tcp) => tcp.0.set_nonblocking(true)?,
+        #[cfg(feature = "coop-tls")]
         MaybeTlsStream::NativeTls(tls) => tls.get_ref().0.set_nonblocking(true)?,
         _ => bail!("Unsupported TLS connection"),
     }
+    #[cfg(not(feature = "coop-tls"))]
+    socket.get_ref().0.set_nonblocking(true)?;
     Ok(Some(socket))
 }
 
