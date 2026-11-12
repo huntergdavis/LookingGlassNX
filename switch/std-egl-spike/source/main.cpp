@@ -1,9 +1,10 @@
 #include <switch.h>
 #include <EGL/egl.h>
+#include <GLES2/gl2.h>
 #include <cstddef>
 #include <cstdint>
 
-extern "C" void lookingglass_render_frame(std::uint32_t buttons);
+extern "C" bool lookingglass_boot_color(std::uint32_t buttons, float* rgba);
 
 struct Runtime {
     EGLDisplay display{EGL_NO_DISPLAY};
@@ -12,8 +13,8 @@ struct Runtime {
     bool egl_initialized{false};
 
     ~Runtime() {
-        if (display != EGL_NO_DISPLAY && egl_initialized) {
-            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (display != EGL_NO_DISPLAY) {
+            if (egl_initialized) eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
             if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
             eglTerminate(display);
@@ -46,13 +47,31 @@ int main(int, char**) {
     const EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     runtime.context = eglCreateContext(runtime.display, config, EGL_NO_CONTEXT, context_attrs);
     if (runtime.context == EGL_NO_CONTEXT || !eglMakeCurrent(runtime.display, runtime.surface, runtime.surface, runtime.context)) return 5;
+    EGLint width = 0;
+    EGLint height = 0;
+    if (!eglQuerySurface(runtime.display, runtime.surface, EGL_WIDTH, &width) ||
+        !eglQuerySurface(runtime.display, runtime.surface, EGL_HEIGHT, &height)) {
+        (void)eglGetError();
+        return 6;
+    }
+    if (width <= 0 || height <= 0) return 6;
+    glViewport(0, 0, width, height);
+    if (glGetError() != GL_NO_ERROR) return 8;
     int result = 0;
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
         const bool a_held = (padGetButtons(&pad) & HidNpadButton_A) != 0;
-        lookingglass_render_frame(a_held ? 1 : 0);
-        if (!eglSwapBuffers(runtime.display, runtime.surface)) { result = 7; break; }
+        float color[4];
+        if (!lookingglass_boot_color(a_held ? 1 : 0, color)) { result = 9; break; }
+        glClearColor(color[0], color[1], color[2], color[3]);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (glGetError() != GL_NO_ERROR) { result = 10; break; }
+        if (!eglSwapBuffers(runtime.display, runtime.surface)) {
+            (void)eglGetError();
+            result = 7;
+            break;
+        }
     }
     return result;
 }
