@@ -109,8 +109,11 @@ disabled. `rodio`/`cpal`, Macroquad/Miniquad, and the application source all
 type-checked. `cargo tree --no-default-features -i openssl-sys` returned no
 matching package. This removes the OpenSSL/native-TLS compile blocker; it does
 not establish a linked game binary, a Horizon Miniquad event/input backend, or
-playability. The separate local EGL spike remains a linker-only feasibility
-artifact, and no device or redistribution validation is claimed.
+playability. A full `cargo build` attempt reached the default `rust-lld` link
+and failed because it could not find `-lc` or `-lm`. The root game package does
+not yet point Cargo at devkitA64/newlib or the libnx host/link packaging rules.
+The separate local EGL spike remains a linker-only feasibility artifact, and
+no device or redistribution validation is claimed.
 
 ## Smallest next playable milestone
 
