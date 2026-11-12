@@ -1,0 +1,12 @@
+/Cargo.lock
+/Cargo.lock
+/.cargo-home/
+/target/
+/build/
+/src.elf
+/src.nro
+/src.nacp
+
+/work.elf
+/work.nacp
+/work.nro

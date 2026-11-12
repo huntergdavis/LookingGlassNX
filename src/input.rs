@@ -204,6 +204,10 @@ struct RawState {
 extern "system" {
     fn XInputGetState(index: u32, state: *mut RawState) -> u32;
 }
+#[cfg(target_os = "horizon")]
+extern "C" {
+    fn lookingglass_horizon_pad(index: u32, state: *mut RawState) -> bool;
+}
 fn read_pad(index: u32) -> Option<RawPad> {
     #[cfg(windows)]
     {
@@ -211,7 +215,13 @@ fn read_pad(index: u32) -> Option<RawPad> {
         // Fixed C layout, writable state, index checked by XInput; Windows 10+ system API.
         (unsafe { XInputGetState(index, &mut state) } == 0).then_some(state.pad)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "horizon")]
+    {
+        let mut state = RawState::default();
+        // The Miniquad host owns the libnx HID sample and exposes its stable C ABI.
+        return (unsafe { lookingglass_horizon_pad(index, &mut state) }).then_some(state.pad);
+    }
+    #[cfg(all(not(windows), not(target_os = "horizon")))]
     {
         let _ = index;
         None

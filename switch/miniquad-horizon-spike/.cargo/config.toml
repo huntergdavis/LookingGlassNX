@@ -1,0 +1,13 @@
+[build]
+target = "aarch64-nintendo-switch-freestanding"
+rustflags = [
+    "-C", "target-cpu=cortex-a57",
+    "--cfg", 'target_family="unix"',
+    "--cfg", 'target_env="newlib"',
+    "--cfg", "unix",
+    "-A", "explicit_builtin_cfgs_in_flags",
+    "-Z", "has-thread-local=true",
+]
+
+[unstable]
+build-std = ["std", "panic_abort", "core", "alloc", "compiler_builtins"]

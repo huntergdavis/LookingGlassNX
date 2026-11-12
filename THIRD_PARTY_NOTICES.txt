@@ -2,6 +2,13 @@ Third-party notices for the Looking Glass Windows x64 candidate
 
 Includes locked target dependencies and build-time macros conservatively. Original game data is not included.
 
+Switch Miniquad Horizon spike: the isolated `switch/miniquad-horizon-spike`
+package vendors Miniquad 0.4.8 from its crates.io source archive. Miniquad is
+dual-licensed MIT OR Apache-2.0; the upstream `LICENSE-MIT` and
+`LICENSE-APACHE` files are retained in `vendor/miniquad/`. The vendored copy
+includes local Horizon-only runner changes. Macroquad 0.4.14 remains under the
+existing dependency license inventory below.
+
 
 adler2-2.0.1
 Declared license: 0BSD OR MIT OR Apache-2.0

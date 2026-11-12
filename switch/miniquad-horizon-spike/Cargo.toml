@@ -1,0 +1,16 @@
+[package]
+name = "lookingglass-switch-miniquad-horizon-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+name = "lookingglass_switch_miniquad_horizon_spike"
+
+[dependencies]
+macroquad = { version = "=0.4.14", default-features = false }
+
+[patch.crates-io]
+miniquad = { path = "../../vendor/miniquad" }

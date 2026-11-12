@@ -35,6 +35,7 @@ __pycache__/
 *.pyc
 .env
 .env.*
+.cargo-home/
 *.pem
 *.key
 *.log
