@@ -799,10 +799,20 @@ mod tests {
     }
     #[test]
     fn cancelling_a_stalled_join_or_readiness_check_closes_its_socket_promptly() {
-        for (drop_peer, secure, readiness) in [
-            (false,false,false), (true,false,false), (false,true,false), (true,true,false),
-            (false,false,true), (true,false,true), (false,true,true), (true,true,true),
-        ] {
+        let cases = if cfg!(feature = "coop-tls") {
+            vec![
+                (false, false, false), (true, false, false),
+                (false, true, false), (true, true, false),
+                (false, false, true), (true, false, true),
+                (false, true, true), (true, true, true),
+            ]
+        } else {
+            vec![
+                (false, false, false), (true, false, false),
+                (false, false, true), (true, false, true),
+            ]
+        };
+        for (drop_peer, secure, readiness) in cases {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             listener.set_nonblocking(true).unwrap();
             let invite = Invite::new(&format!("{}://{}", if secure { "https" } else { "http" }, listener.local_addr().unwrap())).unwrap();
@@ -932,6 +942,30 @@ mod tests {
             assert!(!matches!(g, State::Disconnected(_) | State::Stopped), "Host: {h:?}, guest: {g:?}");
             h == State::Connected && g == State::Connected
         });
+    }
+    #[cfg(not(feature = "coop-tls"))]
+    #[test]
+    fn secure_invite_is_rejected_before_opening_a_socket_without_tls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let invite = Invite::new(&format!("http://{address}"))
+            .unwrap()
+            .with_origin(&format!("https://{address}"))
+            .unwrap();
+        assert!(invite.websocket_url().starts_with("wss://"));
+        let (_peer, _, _, shared) = channels(State::Connecting, MAX_INPUT);
+
+        let result = connect(&invite, &shared, false);
+        let Err(error) = result else {
+            panic!("A wss invite unexpectedly connected without TLS");
+        };
+        assert_eq!(error.to_string(), "Secure co-op is unavailable in this build.");
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "The TLS-disabled path opened a TCP connection before refusing wss"
+        );
     }
     #[test]
     fn readiness_leaves_the_slot_empty_and_does_not_disturb_a_connected_guest() {

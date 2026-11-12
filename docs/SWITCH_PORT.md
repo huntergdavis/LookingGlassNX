@@ -112,6 +112,10 @@ not establish a linked game binary, a Horizon Miniquad event/input backend, or
 playability. A full `cargo build` attempt reached the default `rust-lld` link
 and failed because it could not find `-lc` or `-lm`. The root game package does
 not yet point Cargo at devkitA64/newlib or the libnx host/link packaging rules.
+The local transport suite passed 18 tests with `--no-default-features` (including
+the pre-network `wss://` refusal and plain WebSocket readiness/reconnect paths)
+and 17 tests with the desktop default TLS feature. These host tests do not
+replace Switch device validation.
 The separate local EGL spike remains a linker-only feasibility artifact, and
 no device or redistribution validation is claimed.
 
