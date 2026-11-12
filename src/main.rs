@@ -662,10 +662,11 @@ fn run() -> Result<()> {
                         break;
                     }
                     macroquad::prelude::clear_background(macroquad::prelude::BLACK);
-                    macroquad::prelude::draw_text("2011 PC Alice PK3 data required", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text(&format!("No compatible PK3 archives found at {data_dir}"), 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to the folder containing the original PC .pk3 files.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
-                    macroquad::prelude::draw_text("Xbox 360 Alice: Madness Returns data is not compatible. Press B or Plus to exit.", 32.0, 168.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Unable to open compatible Alice game data", 32.0, 56.0, 28.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text(&format!("Check the data folder: {data_dir}"), 32.0, 96.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("This build requires the original 2011 PC Alice .pk3 archives.", 32.0, 132.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Set LOOKING_GLASS_DATA_DIR to that folder. Xbox 360 data is incompatible.", 32.0, 168.0, 20.0, macroquad::prelude::WHITE);
+                    macroquad::prelude::draw_text("Press B or Plus to exit.", 32.0, 204.0, 20.0, macroquad::prelude::WHITE);
                     macroquad::prelude::next_frame().await;
                 }
             });

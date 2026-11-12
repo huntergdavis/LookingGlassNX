@@ -16,9 +16,9 @@ On Horizon, set `LOOKING_GLASS_DATA_DIR` to a folder containing the original
 2011 PC Alice `.pk3` archives; the default is
 `sdmc:/switch/alice-nx/game-data`. The supplied `game_root` was found to contain
 an Xbox 360 Alice: Madness Returns layout, which this loader cannot use and
-does not modify. If the PC archives are missing, the NRO shows an on-screen
-message explaining the required format. Saves and settings use the separate
-writable profile `sdmc:/switch/alice-nx/profile` (saves under its `saves/`
+does not modify. If the data folder cannot be opened, the NRO shows its path,
+the required format, and the configurable override. Saves and settings use the
+separate writable profile `sdmc:/switch/alice-nx/profile` (saves under its `saves/`
 child). The NRO does not embed user assets.
 
 Miniquad requests GLES3 and preflights the 121 functions present in both its
