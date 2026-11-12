@@ -1,0 +1,15 @@
+[package]
+name = "looking-glass-switch-probe"
+authors = ["Looking Glass contributors"]
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nx = { git = "https://github.com/aarch64-switch-rs/nx", rev = "5e0a67c630352c93414b421a77ed2de587f61393", features=["input", "console"] }
+
+# For help / more information, see https://github.com/aarch64-switch-rs/cargo-nx/wiki
+
+[package.metadata.nx.nro.nacp]
+default_name = "Looking Glass Switch Probe"
+default_author = "Looking Glass contributors"
+version = "0.1.0"
