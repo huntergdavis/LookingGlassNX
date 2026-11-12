@@ -5,7 +5,3 @@ edition = "2024"
 
 [lib]
 crate-type = ["staticlib"]
-
-[dependencies]
-getrandom = "=0.3.4"
-miniquad = "=0.4.8"

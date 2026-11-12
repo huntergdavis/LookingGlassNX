@@ -7,7 +7,6 @@ rustflags = [
     "--cfg", "unix",
     "-A", "explicit_builtin_cfgs_in_flags",
     "-Z", "has-thread-local=true",
-    "--cfg", 'getrandom_backend="custom"',
 ]
 
 [unstable]
