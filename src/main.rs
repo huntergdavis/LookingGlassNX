@@ -222,13 +222,87 @@ fn default_save_dir() -> PathBuf {
     }
 }
 
+fn is_coop_option(option: &str) -> bool {
+    let name = option.split_once('=').map_or(option, |(name, _)| name);
+    if !name.starts_with("--") {
+        return false;
+    }
+    name.starts_with("--coop-")
+        || matches!(
+            name,
+            "--potears3-coop-route-check"
+                | "--skool2-coop-route-check"
+                | "--potears1-coop-route-check"
+        )
+        || levels::find_check(name).is_some_and(|check| check.flag.contains("coop"))
+}
+
+const CLI_OPTIONS_WITH_VALUES: &[&str] = &[
+    "--coop-host",
+    "--coop-join",
+    "--coop-route-driver",
+    "--coop-scene-check",
+    "--coop-death-check",
+    "--coop-delay-ms",
+    "--coop-jitter-ms",
+    "--difficulty",
+    "--save-dir",
+    "--profile",
+    "--load",
+    "--entry",
+    "--campaign-from",
+    "--campaign-to",
+    "--campaign-expect",
+    "--campaign-log",
+    "--registry-baseline",
+    "--registry-record",
+    "--data",
+    "--map",
+    "--start-at",
+    "--capture",
+    "--frames",
+    "--story-preview",
+    "--movie",
+    "--audio-capture",
+];
+
+fn takes_cli_value(option: &str) -> bool {
+    CLI_OPTIONS_WITH_VALUES.contains(&option)
+}
+
+fn horizon_coop_flag(args: &[String]) -> Option<&str> {
+    let mut value_follows = false;
+    for arg in args {
+        if value_follows {
+            value_follows = false;
+            continue;
+        }
+        if is_coop_option(arg) {
+            return Some(arg);
+        }
+        let option = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        value_follows = !arg.contains('=') && takes_cli_value(option);
+    }
+    None
+}
+
+fn preparse_coop_cli(args: &[String], horizon: bool) -> Result<Option<Result<()>>> {
+    if horizon {
+        if let Some(flag) = horizon_coop_flag(args) {
+            anyhow::bail!("Co-op and co-op diagnostics are disabled on Horizon: {flag}");
+        }
+    }
+    Ok(coop::check::cli(args))
+}
+
 fn run() -> Result<()> {
     #[cfg(target_os = "horizon")]
     std::env::set_var(
         "LOOKING_GLASS_SETTINGS_DIR",
         "sdmc:/switch/alice-nx/profile",
     );
-    if let Some(result) = coop::check::cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(result) = preparse_coop_cli(&args, cfg!(target_os = "horizon"))? {
         return result;
     }
     let mut o = Options {
@@ -255,7 +329,7 @@ fn run() -> Result<()> {
         story_preview: None,
         shelf_preview: false,
     };
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     let mut mode = "view";
     let mut registry = registry_check::Args::default();
     let mut chain = campaign_chain::Args::default();
@@ -1628,4 +1702,62 @@ fn run() -> Result<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod horizon_coop_flag_tests {
+    use super::{preparse_coop_cli, CLI_OPTIONS_WITH_VALUES};
+
+    #[test]
+    fn production_preparser_rejects_direct_and_registered_coop_flags() {
+        let direct_flags = [
+            "--coop-host",
+            "--coop-join",
+            "--coop-probe-host",
+            "--coop-probe-join",
+            "--coop-checkpoint-check",
+            "--coop-route-driver",
+            "--potears3-coop-route-check",
+            "--skool2-coop-route-check",
+            "--potears1-coop-route-check",
+            "--wchess1-coop-route-check",
+            "--garden3-coop-check",
+        ];
+        for flag in direct_flags {
+            let args = vec!["--frames".to_owned(), "1".to_owned(), flag.to_owned()];
+            assert!(preparse_coop_cli(&args, true).is_err(), "{flag} passed Horizon gate");
+        }
+
+        let registered: Vec<_> = crate::levels::LEVELS
+            .iter()
+            .flat_map(|registration| registration.checks.iter())
+            .filter(|check| check.flag.contains("coop"))
+            .map(|check| check.flag)
+            .collect();
+        assert!(!registered.is_empty(), "registry has no co-op checks to gate");
+        for flag in registered {
+            let args = vec![flag.to_owned()];
+            assert!(preparse_coop_cli(&args, true).is_err(), "{flag} passed Horizon gate");
+        }
+    }
+
+    #[test]
+    fn production_preparser_does_not_treat_option_values_as_flags() {
+        for option in CLI_OPTIONS_WITH_VALUES
+            .iter()
+            .copied()
+            .filter(|option| !super::is_coop_option(option))
+        {
+            let args = vec![option.to_owned(), "--coop-host".to_owned()];
+            assert!(preparse_coop_cli(&args, true).is_ok(), "{option} value was rejected");
+        }
+        let equals = vec!["--data=--coop-host".to_owned()];
+        assert!(preparse_coop_cli(&equals, true).is_ok());
+    }
+
+    #[test]
+    fn desktop_preparser_keeps_coop_options_enabled() {
+        let args = vec!["--potears3-coop-route-check".to_owned()];
+        assert!(preparse_coop_cli(&args, false).unwrap().is_none());
+    }
 }

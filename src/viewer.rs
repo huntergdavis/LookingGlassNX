@@ -533,6 +533,11 @@ fn starting_stats(options: &Options, map: &str, entry: Option<&str>) -> Stats {
 mod start;
 
 pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
+    #[cfg(target_os = "horizon")]
+    anyhow::ensure!(
+        options.coop.is_none(),
+        "Co-op is disabled on Horizon until worker shutdown is coordinated"
+    );
     // Release cursor/audio before Miniquad destroys its native request queue.
     prevent_quit();
     if let Some(launch) = &options.coop {
@@ -921,18 +926,25 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
             use crate::menu::Action;
             match action {
                 Action::Coop => {
-                    audio.update(0., pos, yaw, true, true);
-                    let visit = crate::coop::protocol::Visit {
-                        epoch: 1, map: maps[current].clone(), entry: entry_spawn.clone(),
-                        difficulty: stats.difficulty,
-                        combat_preview: false,
-                    };
-                    let single_player = (saves_enabled && !post_game).then(|| game_snapshot!());
-                    if let Some(game) = &single_player { crate::ui_probe::solo("solo-before-coop", game); }
-                    crate::coop::menu::open(&mut assets, &options, &mut escape_menu, visit, single_player).await;
-                    if crate::ui_probe::enabled() { crate::ui_probe::solo("solo-after-coop", &game_snapshot!()); }
-                    if is_quit_requested() { break; }
-                    escape_menu.open(crate::menu::Page::Main, &preferences, audio.settings);
+                    #[cfg(target_os = "horizon")]
+                    {
+                        ui.toast("Co-op is disabled on Horizon", screen_height() - 70.);
+                    }
+                    #[cfg(not(target_os = "horizon"))]
+                    {
+                        audio.update(0., pos, yaw, true, true);
+                        let visit = crate::coop::protocol::Visit {
+                            epoch: 1, map: maps[current].clone(), entry: entry_spawn.clone(),
+                            difficulty: stats.difficulty,
+                            combat_preview: false,
+                        };
+                        let single_player = (saves_enabled && !post_game).then(|| game_snapshot!());
+                        if let Some(game) = &single_player { crate::ui_probe::solo("solo-before-coop", game); }
+                        crate::coop::menu::open(&mut assets, &options, &mut escape_menu, visit, single_player).await;
+                        if crate::ui_probe::enabled() { crate::ui_probe::solo("solo-after-coop", &game_snapshot!()); }
+                        if is_quit_requested() { break; }
+                        escape_menu.open(crate::menu::Page::Main, &preferences, audio.settings);
+                    }
                 }
                 Action::Resume => {
                     paused = false;

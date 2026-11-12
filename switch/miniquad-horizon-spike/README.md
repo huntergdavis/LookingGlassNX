@@ -43,10 +43,15 @@ headers (8 and 10); all other queries return `-1` with `EINVAL`. The shared
 mapping/errno helper has a host test, but target ABI and runtime behavior have
 not been exercised on hardware.
 
-Co-op CLI launch and the main-menu entry are disabled on Horizon for this
-candidate. The current co-op path can leave detached worker tasks active, and
-their quiescence is not yet established before EGL and CSRNG teardown. Desktop
-co-op behavior remains enabled.
+Horizon rejects co-op launch options, the co-op probe, the direct co-op
+diagnostic options, and registered co-op level checks before the co-op
+diagnostic pre-parser runs. Values consumed by ordinary options are skipped
+when classifying flags. The viewer rejects co-op options at entry, its menu
+action is inert, and the preview runner has a defensive guard. These gates
+avoid entering co-op paths while native networking worker shutdown is not
+proven to quiesce before EGL and CSRNG teardown. Desktop co-op behavior remains
+enabled. This does not establish that every worker lifecycle is isolated or
+safe to tear down.
 
 Run commands from this directory so Cargo discovers `.cargo/config.toml`:
 

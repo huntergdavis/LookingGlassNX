@@ -64,6 +64,10 @@ mod tests {
 }
 
 pub async fn run(assets: &mut Assets, options: &Options, launch: &Launch) -> Result<bool> {
+    anyhow::ensure!(
+        !cfg!(target_os = "horizon"),
+        "Co-op is disabled on Horizon until worker shutdown is coordinated"
+    );
     let ui = crate::ui::Ui::load(assets)?;
     show_mouse(false);
     let _ = std::fs::remove_file(crate::preferences::path("coop-live.json"));
