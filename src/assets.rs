@@ -100,7 +100,11 @@ impl Assets {
                 if next_progress < PROGRESS_ENTRIES.len()
                     && processed >= PROGRESS_ENTRIES[next_progress]
                 {
-                    save_fingerprint_progress(stage, PROGRESS_ENTRIES[next_progress], started);
+                    save_fingerprint_progress(
+                        stage,
+                        PROGRESS_ENTRIES[next_progress],
+                        Some(started),
+                    );
                     next_progress += 1;
                 }
             }
