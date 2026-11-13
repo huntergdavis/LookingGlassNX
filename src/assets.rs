@@ -4,10 +4,50 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
+    time::Instant,
 };
 use zip::ZipArchive;
 
 const MAX_ENTRY: u64 = 128 * 1024 * 1024;
+
+fn save_fingerprint_marker(stage: &str, started: &Instant) {
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!(
+        "rust:save-fingerprint:{stage}:elapsed-ms={}",
+        started.elapsed().as_millis()
+    ));
+    #[cfg(not(target_os = "horizon"))]
+    let _ = (stage, started);
+}
+
+fn save_fingerprint_progress(stage: &str, entries: usize, started: &Instant) {
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!(
+        "rust:save-fingerprint:{stage}:entries={entries}:elapsed-ms={}",
+        started.elapsed().as_millis()
+    ));
+    #[cfg(not(target_os = "horizon"))]
+    let _ = (stage, entries, started);
+}
+
+fn save_fingerprint_variant_marker(variant: &str, phase: &str, started: &Instant) {
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!(
+        "rust:save-fingerprint:{variant}:{phase}:elapsed-ms={}",
+        started.elapsed().as_millis()
+    ));
+    #[cfg(not(target_os = "horizon"))]
+    let _ = (variant, phase, started);
+}
+
+fn save_fingerprint_variant(index: usize) -> Option<&'static str> {
+    match index {
+        0 => Some("variant-0"),
+        1 => Some("variant-1"),
+        2 => Some("variant-2"),
+        _ => None,
+    }
+}
 
 /// Read-only PK3 mount. Later alphabetically sorted packs override earlier packs.
 pub struct Assets {
@@ -21,14 +61,32 @@ impl Assets {
     /// Stable identity of the mounted, override-resolved corpus, independent of its folder.
     /// Central-directory CRC/size metadata avoids decoding every asset at startup.
     pub fn fingerprint(&mut self) -> Result<String> {
+        self.fingerprint_with_progress(None)
+    }
+    fn fingerprint_with_progress(
+        &mut self,
+        diagnostic: Option<(&str, &Instant)>,
+    ) -> Result<String> {
         use sha2::{Digest, Sha256};
+        // Bound progress output to three numeric checkpoints per fingerprint.
+        const PROGRESS_ENTRIES: [usize; 3] = [4096, 16384, 65536];
         let mut hash = Sha256::new();
-        for (name, &(pack, index)) in &self.entries {
+        let mut next_progress = 0;
+        for (index_in_map, (name, &(pack, index))) in self.entries.iter().enumerate() {
             let entry = self.packs[pack].by_index(index)?;
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name.as_bytes());
             hash.update(entry.size().to_le_bytes());
             hash.update(entry.crc32().to_le_bytes());
+            let processed = index_in_map + 1;
+            if let Some((stage, started)) = diagnostic {
+                if next_progress < PROGRESS_ENTRIES.len()
+                    && processed >= PROGRESS_ENTRIES[next_progress]
+                {
+                    save_fingerprint_progress(stage, PROGRESS_ENTRIES[next_progress], started);
+                    next_progress += 1;
+                }
+            }
         }
         Ok(format!("{:x}", hash.finalize()))
     }
@@ -77,14 +135,25 @@ impl Assets {
     /// Reconstruct older identities with and without English, using the same
     /// core packs and available translations. Runtime mounting is unchanged.
     pub(crate) fn save_fingerprints(&mut self) -> Result<(String, Vec<String>)> {
+        let started = Instant::now();
+        save_fingerprint_marker("begin", &started);
         let core = self
             .paths
             .iter()
             .filter(|p| !is_language_pack(p))
             .cloned()
             .collect::<Vec<_>>();
-        let identity = Self::open_paths(&self.base, core.clone())?.fingerprint()?;
-        let mut legacy = vec![self.fingerprint()?];
+        save_fingerprint_marker("core-open:begin", &started);
+        let mut core_assets = Self::open_paths(&self.base, core.clone())?;
+        save_fingerprint_marker("core-open:ready", &started);
+        save_fingerprint_marker("core-fingerprint:begin", &started);
+        let identity = core_assets.fingerprint_with_progress(Some(("core", &started)))?;
+        save_fingerprint_marker("core-fingerprint:ready", &started);
+        save_fingerprint_marker("mounted-fingerprint:begin", &started);
+        let mounted = self.fingerprint_with_progress(Some(("mounted", &started)))?;
+        save_fingerprint_marker("mounted-fingerprint:ready", &started);
+        let mut legacy = vec![mounted];
+        save_fingerprint_marker("language-discovery:begin", &started);
         let mut languages = self
             .paths
             .iter()
@@ -104,32 +173,73 @@ impl Assets {
                 );
             }
         }
+        save_fingerprint_marker(
+            &format!("language-discovery:count={}", languages.len()),
+            &started,
+        );
+        save_fingerprint_marker("language-discovery:ready", &started);
         let mut bases = vec![core.clone()];
+        let mut variant_index = 0;
+        save_fingerprint_marker("english-variants:begin", &started);
         for english in languages.iter().filter(|p| is_english_pack(p)) {
             let mut paths = core.clone();
             paths.push(english.clone());
+            let stage = save_fingerprint_variant(variant_index);
+            variant_index += 1;
+            if let Some(stage) = stage {
+                save_fingerprint_variant_marker(stage, "open:begin", &started);
+            }
             // Includes the previous save identity that kept English in the core.
-            if let Ok(fingerprint) = Self::open_paths(&self.base, paths.clone())
-                .and_then(|mut mounted| mounted.fingerprint())
-            {
-                legacy.push(fingerprint);
-                bases.push(paths);
+            if let Ok(mut mounted) = Self::open_paths(&self.base, paths.clone()) {
+                if let Some(stage) = stage {
+                    save_fingerprint_variant_marker(stage, "open:ready", &started);
+                    save_fingerprint_variant_marker(stage, "fingerprint:begin", &started);
+                }
+                if let Ok(fingerprint) = mounted.fingerprint_with_progress(
+                    stage.map(|stage| (stage, &started)),
+                ) {
+                    if let Some(stage) = stage {
+                        save_fingerprint_variant_marker(stage, "fingerprint:ready", &started);
+                    }
+                    legacy.push(fingerprint);
+                    bases.push(paths);
+                }
             }
         }
+        save_fingerprint_marker("english-variants:ready", &started);
+        save_fingerprint_marker("other-language-variants:begin", &started);
         for language in languages.iter().filter(|p| !is_english_pack(p)) {
             for base in &bases {
                 let mut paths = base.clone();
                 paths.push(language.clone());
+                let stage = save_fingerprint_variant(variant_index);
+                variant_index += 1;
+                if let Some(stage) = stage {
+                    save_fingerprint_variant_marker(stage, "open:begin", &started);
+                }
                 // An unreadable inactive cache must not prevent launching.
-                if let Ok(fingerprint) = Self::open_paths(&self.base, paths)
-                    .and_then(|mut mounted| mounted.fingerprint())
-                {
-                    legacy.push(fingerprint);
+                if let Ok(mut mounted) = Self::open_paths(&self.base, paths) {
+                    if let Some(stage) = stage {
+                        save_fingerprint_variant_marker(stage, "open:ready", &started);
+                        save_fingerprint_variant_marker(stage, "fingerprint:begin", &started);
+                    }
+                    if let Ok(fingerprint) = mounted.fingerprint_with_progress(
+                        stage.map(|stage| (stage, &started)),
+                    ) {
+                        if let Some(stage) = stage {
+                            save_fingerprint_variant_marker(stage, "fingerprint:ready", &started);
+                        }
+                        legacy.push(fingerprint);
+                    }
                 }
             }
         }
+        save_fingerprint_marker("other-language-variants:ready", &started);
+        save_fingerprint_marker("deduplicate:begin", &started);
         legacy.sort();
         legacy.dedup();
+        save_fingerprint_marker("deduplicate:ready", &started);
+        save_fingerprint_marker("ready", &started);
         Ok((identity, legacy))
     }
 
