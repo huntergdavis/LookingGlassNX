@@ -1623,6 +1623,8 @@ impl Menu {
     ) -> Action {
         show_mouse(false);
         self.refresh_saves(store);
+        #[cfg(target_os = "horizon")]
+        let mut main_menu_draw_reported = false;
         loop {
             let page = self.page.unwrap_or(Page::Main);
             let mut action = None;
@@ -1875,6 +1877,11 @@ impl Menu {
             let buttons = self.buttons(page);
             self.selected = self.selected.min(buttons.len().saturating_sub(1));
             self.draw(page, &buttons);
+            #[cfg(target_os = "horizon")]
+            if !main_menu_draw_reported && self.frontend && page == Page::Main {
+                crate::horizon_diag("rust:main-menu-draw-submitted");
+                main_menu_draw_reported = true;
+            }
             if crate::ui_probe::enabled() {
                 crate::ui_probe::screen(&format!("menu-{page:?}"), &buttons.iter()
                     .map(|b| (format!("{:?}", b.click), b.rect)).collect::<Vec<_>>(), &self.message);
