@@ -10,32 +10,49 @@ use zip::ZipArchive;
 
 const MAX_ENTRY: u64 = 128 * 1024 * 1024;
 
-fn save_fingerprint_marker(stage: &str, started: &Instant) {
+fn save_fingerprint_start() -> Option<Instant> {
     #[cfg(target_os = "horizon")]
-    crate::horizon_diag(&format!(
-        "rust:save-fingerprint:{stage}:elapsed-ms={}",
-        started.elapsed().as_millis()
-    ));
+    {
+        Some(Instant::now())
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        None
+    }
+}
+
+fn save_fingerprint_marker(stage: &str, started: Option<&Instant>) {
+    #[cfg(target_os = "horizon")]
+    if let Some(started) = started {
+        crate::horizon_diag(&format!(
+            "rust:save-fingerprint:{stage}:elapsed-ms={}",
+            started.elapsed().as_millis()
+        ));
+    }
     #[cfg(not(target_os = "horizon"))]
     let _ = (stage, started);
 }
 
-fn save_fingerprint_progress(stage: &str, entries: usize, started: &Instant) {
+fn save_fingerprint_progress(stage: &str, entries: usize, started: Option<&Instant>) {
     #[cfg(target_os = "horizon")]
-    crate::horizon_diag(&format!(
-        "rust:save-fingerprint:{stage}:entries={entries}:elapsed-ms={}",
-        started.elapsed().as_millis()
-    ));
+    if let Some(started) = started {
+        crate::horizon_diag(&format!(
+            "rust:save-fingerprint:{stage}:entries={entries}:elapsed-ms={}",
+            started.elapsed().as_millis()
+        ));
+    }
     #[cfg(not(target_os = "horizon"))]
     let _ = (stage, entries, started);
 }
 
-fn save_fingerprint_variant_marker(variant: &str, phase: &str, started: &Instant) {
+fn save_fingerprint_variant_marker(variant: &str, phase: &str, started: Option<&Instant>) {
     #[cfg(target_os = "horizon")]
-    crate::horizon_diag(&format!(
-        "rust:save-fingerprint:{variant}:{phase}:elapsed-ms={}",
-        started.elapsed().as_millis()
-    ));
+    if let Some(started) = started {
+        crate::horizon_diag(&format!(
+            "rust:save-fingerprint:{variant}:{phase}:elapsed-ms={}",
+            started.elapsed().as_millis()
+        ));
+    }
     #[cfg(not(target_os = "horizon"))]
     let _ = (variant, phase, started);
 }
@@ -135,25 +152,28 @@ impl Assets {
     /// Reconstruct older identities with and without English, using the same
     /// core packs and available translations. Runtime mounting is unchanged.
     pub(crate) fn save_fingerprints(&mut self) -> Result<(String, Vec<String>)> {
-        let started = Instant::now();
-        save_fingerprint_marker("begin", &started);
+        let started = save_fingerprint_start();
+        save_fingerprint_marker("begin", started.as_ref());
         let core = self
             .paths
             .iter()
             .filter(|p| !is_language_pack(p))
             .cloned()
             .collect::<Vec<_>>();
-        save_fingerprint_marker("core-open:begin", &started);
+        save_fingerprint_marker("core-open:begin", started.as_ref());
         let mut core_assets = Self::open_paths(&self.base, core.clone())?;
-        save_fingerprint_marker("core-open:ready", &started);
-        save_fingerprint_marker("core-fingerprint:begin", &started);
-        let identity = core_assets.fingerprint_with_progress(Some(("core", &started)))?;
-        save_fingerprint_marker("core-fingerprint:ready", &started);
-        save_fingerprint_marker("mounted-fingerprint:begin", &started);
-        let mounted = self.fingerprint_with_progress(Some(("mounted", &started)))?;
-        save_fingerprint_marker("mounted-fingerprint:ready", &started);
+        save_fingerprint_marker("core-open:ready", started.as_ref());
+        save_fingerprint_marker("core-fingerprint:begin", started.as_ref());
+        let identity = core_assets
+            .fingerprint_with_progress(started.as_ref().map(|started| ("core", started)))?;
+        drop(core_assets);
+        save_fingerprint_marker("core-fingerprint:ready", started.as_ref());
+        save_fingerprint_marker("mounted-fingerprint:begin", started.as_ref());
+        let mounted =
+            self.fingerprint_with_progress(started.as_ref().map(|started| ("mounted", started)))?;
+        save_fingerprint_marker("mounted-fingerprint:ready", started.as_ref());
         let mut legacy = vec![mounted];
-        save_fingerprint_marker("language-discovery:begin", &started);
+        save_fingerprint_marker("language-discovery:begin", started.as_ref());
         let mut languages = self
             .paths
             .iter()
@@ -173,41 +193,48 @@ impl Assets {
                 );
             }
         }
+        #[cfg(target_os = "horizon")]
         save_fingerprint_marker(
             &format!("language-discovery:count={}", languages.len()),
-            &started,
+            started.as_ref(),
         );
-        save_fingerprint_marker("language-discovery:ready", &started);
+        save_fingerprint_marker("language-discovery:ready", started.as_ref());
         let mut bases = vec![core.clone()];
         let mut variant_index = 0;
-        save_fingerprint_marker("english-variants:begin", &started);
+        save_fingerprint_marker("english-variants:begin", started.as_ref());
         for english in languages.iter().filter(|p| is_english_pack(p)) {
             let mut paths = core.clone();
             paths.push(english.clone());
             let stage = save_fingerprint_variant(variant_index);
             variant_index += 1;
             if let Some(stage) = stage {
-                save_fingerprint_variant_marker(stage, "open:begin", &started);
+                save_fingerprint_variant_marker(stage, "open:begin", started.as_ref());
             }
             // Includes the previous save identity that kept English in the core.
             if let Ok(mut mounted) = Self::open_paths(&self.base, paths.clone()) {
                 if let Some(stage) = stage {
-                    save_fingerprint_variant_marker(stage, "open:ready", &started);
-                    save_fingerprint_variant_marker(stage, "fingerprint:begin", &started);
+                    save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
+                    save_fingerprint_variant_marker(stage, "fingerprint:begin", started.as_ref());
                 }
                 if let Ok(fingerprint) = mounted.fingerprint_with_progress(
-                    stage.map(|stage| (stage, &started)),
+                    started
+                        .as_ref()
+                        .and_then(|started| stage.map(|stage| (stage, started))),
                 ) {
                     if let Some(stage) = stage {
-                        save_fingerprint_variant_marker(stage, "fingerprint:ready", &started);
+                        save_fingerprint_variant_marker(
+                            stage,
+                            "fingerprint:ready",
+                            started.as_ref(),
+                        );
                     }
                     legacy.push(fingerprint);
                     bases.push(paths);
                 }
             }
         }
-        save_fingerprint_marker("english-variants:ready", &started);
-        save_fingerprint_marker("other-language-variants:begin", &started);
+        save_fingerprint_marker("english-variants:ready", started.as_ref());
+        save_fingerprint_marker("other-language-variants:begin", started.as_ref());
         for language in languages.iter().filter(|p| !is_english_pack(p)) {
             for base in &bases {
                 let mut paths = base.clone();
@@ -215,31 +242,41 @@ impl Assets {
                 let stage = save_fingerprint_variant(variant_index);
                 variant_index += 1;
                 if let Some(stage) = stage {
-                    save_fingerprint_variant_marker(stage, "open:begin", &started);
+                    save_fingerprint_variant_marker(stage, "open:begin", started.as_ref());
                 }
                 // An unreadable inactive cache must not prevent launching.
                 if let Ok(mut mounted) = Self::open_paths(&self.base, paths) {
                     if let Some(stage) = stage {
-                        save_fingerprint_variant_marker(stage, "open:ready", &started);
-                        save_fingerprint_variant_marker(stage, "fingerprint:begin", &started);
+                        save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
+                        save_fingerprint_variant_marker(
+                            stage,
+                            "fingerprint:begin",
+                            started.as_ref(),
+                        );
                     }
                     if let Ok(fingerprint) = mounted.fingerprint_with_progress(
-                        stage.map(|stage| (stage, &started)),
+                        started
+                            .as_ref()
+                            .and_then(|started| stage.map(|stage| (stage, started))),
                     ) {
                         if let Some(stage) = stage {
-                            save_fingerprint_variant_marker(stage, "fingerprint:ready", &started);
+                            save_fingerprint_variant_marker(
+                                stage,
+                                "fingerprint:ready",
+                                started.as_ref(),
+                            );
                         }
                         legacy.push(fingerprint);
                     }
                 }
             }
         }
-        save_fingerprint_marker("other-language-variants:ready", &started);
-        save_fingerprint_marker("deduplicate:begin", &started);
+        save_fingerprint_marker("other-language-variants:ready", started.as_ref());
+        save_fingerprint_marker("deduplicate:begin", started.as_ref());
         legacy.sort();
         legacy.dedup();
-        save_fingerprint_marker("deduplicate:ready", &started);
-        save_fingerprint_marker("ready", &started);
+        save_fingerprint_marker("deduplicate:ready", started.as_ref());
+        save_fingerprint_marker("ready", started.as_ref());
         Ok((identity, legacy))
     }
 
@@ -287,9 +324,22 @@ fn normalize(s: &str) -> String {
 }
 
 fn is_language_pack(path: &Path) -> bool {
-    matches!(path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase().as_str(),
-        "pak4_english.pk3" | "pak4_german.pk3" | "pak4_french.pk3" | "pak4_spanish.pk3" | "pak4_dutch.pk3" |
-        "base_g.pk3" | "base_f.pk3" | "base_s.pk3" | "base_d.pk3")
+    matches!(
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "pak4_english.pk3"
+            | "pak4_german.pk3"
+            | "pak4_french.pk3"
+            | "pak4_spanish.pk3"
+            | "pak4_dutch.pk3"
+            | "base_g.pk3"
+            | "base_f.pk3"
+            | "base_s.pk3"
+            | "base_d.pk3"
+    )
 }
 
 fn is_english_pack(path: &Path) -> bool {
@@ -304,7 +354,8 @@ mod tests {
     use std::io::Write;
     #[test]
     fn language_switch_preserves_save_identity_and_alphabetical_precedence() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("looking-glass-language-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("looking-glass-language-{}", std::process::id()));
         let base = root.join("game-data/base");
         let cache = root.join("game-data/languages");
         fs::create_dir_all(&base).context("create test base")?;
@@ -324,7 +375,8 @@ mod tests {
         assert_eq!(german.read("ui/main.urc")?, b"German");
         assert_eq!(german.save_fingerprints()?.0, core_id);
         drop(german);
-        fs::copy(base.join("pak4_german.pk3"), cache.join("pak4_german.pk3")).context("cache German test pack")?;
+        fs::copy(base.join("pak4_german.pk3"), cache.join("pak4_german.pk3"))
+            .context("cache German test pack")?;
         fs::remove_file(base.join("pak4_german.pk3"))?;
         write(&base.join("pak4_french.pk3"), "ui/main.urc", b"French")?;
         let mut french = Assets::open(&base)?;
@@ -340,8 +392,18 @@ mod tests {
         assert_ne!(changed, core_id);
         assert!(!legacy.contains(&old_german));
         drop(modified);
-        for path in [base.join("pak0.pk3"), base.join("pak4_french.pk3"), base.join("pak5_mod.pk3"), cache.join("pak4_german.pk3")] { fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?; }
-        for path in [base, cache, root.join("game-data"), root] { fs::remove_dir(&path).with_context(|| format!("remove directory {}", path.display()))?; }
+        for path in [
+            base.join("pak0.pk3"),
+            base.join("pak4_french.pk3"),
+            base.join("pak5_mod.pk3"),
+            cache.join("pak4_german.pk3"),
+        ] {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+        for path in [base, cache, root.join("game-data"), root] {
+            fs::remove_dir(&path)
+                .with_context(|| format!("remove directory {}", path.display()))?;
+        }
         Ok(())
     }
     #[test]
