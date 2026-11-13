@@ -177,10 +177,18 @@ pub extern "C" fn miniquad_horizon_frame() {
             if FIRST_FRAME.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 diag("rust:first-frame-entered");
             }
+            static HANDLER_FRAME: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let handler_frame = HANDLER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            diag_handler_frame(handler_frame, b"frame:2:handler:entered\0", b"frame:3:handler:entered\0");
+            diag_handler_frame(handler_frame, b"frame:2:handler:update:before\0", b"frame:3:handler:update:before\0");
             handler.update();
+            diag_handler_frame(handler_frame, b"frame:2:handler:update:returned\0", b"frame:3:handler:update:returned\0");
             drain_native_requests();
+            diag_handler_frame(handler_frame, b"frame:2:handler:draw:before\0", b"frame:3:handler:draw:before\0");
             handler.draw();
+            diag_handler_frame(handler_frame, b"frame:2:handler:draw:returned\0", b"frame:3:handler:draw:returned\0");
             drain_native_requests();
+            diag_handler_frame(handler_frame, b"frame:2:handler:returned\0", b"frame:3:handler:returned\0");
         }
     });
 }
@@ -189,6 +197,14 @@ fn drain_native_requests() {
     let requests = NATIVE_REQUESTS.lock().unwrap();
     let Some(receiver) = requests.as_ref() else { return; };
     crate::native::horizon_requests::drain(receiver);
+}
+
+fn diag_handler_frame(frame: usize, frame2: &'static [u8], frame3: &'static [u8]) {
+    match frame {
+        2 => diag_static(frame2),
+        3 => diag_static(frame3),
+        _ => {}
+    }
 }
 
 #[no_mangle]

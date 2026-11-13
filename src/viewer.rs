@@ -557,6 +557,8 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     escape_menu.backdrop();
     ui.toast("Opening Wonderland...", screen_height() - 70.);
     next_frame().await;
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:viewer-next-frame-resumed");
     let saves_enabled = !(options.npc_preview
         || options.combat_preview
         || options.larva_preview

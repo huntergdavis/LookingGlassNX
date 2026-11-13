@@ -234,12 +234,53 @@ int main(int, char**) {
     int result=0;
     bool first_frame = true;
     bool first_swap = true;
-    while (appletMainLoop()) {
+    unsigned host_iteration = 0;
+    while (true) {
+        ++host_iteration;
+        const bool trace_iteration = host_iteration == 2 || host_iteration == 3;
+        char trace[80];
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:appletMainLoop:before", host_iteration);
+            diag(trace);
+        }
+        const bool loop_active = appletMainLoop();
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:appletMainLoop:returned:%s", host_iteration, loop_active ? "true" : "false");
+            diag(trace);
+        }
+        if (!loop_active) break;
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:padUpdate:before", host_iteration);
+            diag(trace);
+        }
         padUpdate(&g_pad);
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:padUpdate:returned", host_iteration);
+            diag(trace);
+            std::snprintf(trace, sizeof(trace), "frame:%u:horizonFrame:before", host_iteration);
+            diag(trace);
+        }
         miniquad_horizon_frame();
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:horizonFrame:returned", host_iteration);
+            diag(trace);
+        }
         if (first_frame) { diag("frame:first-draw-returned"); first_frame = false; }
-        if (miniquad_horizon_should_quit()) break;
+        const bool should_quit = miniquad_horizon_should_quit();
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:shouldQuit:%s", host_iteration, should_quit ? "true" : "false");
+            diag(trace);
+        }
+        if (should_quit) break;
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:eglSwapBuffers:before", host_iteration);
+            diag(trace);
+        }
         if (!eglSwapBuffers(display,surface)) { char e[64]; std::snprintf(e,sizeof(e),"exit:egl-swap-failed:error=0x%04x:9",eglGetError()); diag(e); result=9; break; }
+        if (trace_iteration) {
+            std::snprintf(trace, sizeof(trace), "frame:%u:eglSwapBuffers:returned", host_iteration);
+            diag(trace);
+        }
         if (first_swap) { diag("frame:first-swap-succeeded"); first_swap = false; }
     }
     miniquad_horizon_stop();
