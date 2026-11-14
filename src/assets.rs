@@ -664,6 +664,8 @@ mod tests {
                 ("ui/early.urc", b"English override"),
                 ("ui/late.urc", b"English late"),
                 ("ui/german.urc", b"English German"),
+                ("UI\\duplicate-english.urc", b"English duplicate first"),
+                ("ui/duplicate-english.urc", b"English duplicate last"),
             ],
         )?;
         write_pack(
@@ -692,8 +694,17 @@ mod tests {
         assert_eq!(actual_assets.read("ui/late.urc")?, b"later core wins");
         assert_eq!(actual_assets.read("ui/german.urc")?, b"German active");
         assert_eq!(actual_assets.read("ui/duplicate.urc")?, b"duplicate last");
+        assert_eq!(
+            actual_assets.read("ui/duplicate-english.urc")?,
+            b"English duplicate last"
+        );
 
         let actual = actual_assets.save_fingerprints()?;
+        assert_eq!(
+            actual_assets.save_fingerprints()?,
+            actual,
+            "repeated fingerprint calls preserve results and mount state"
+        );
         let names_after = actual_assets.names().map(str::to_owned).collect::<Vec<_>>();
         assert_eq!(names_after, names_before);
         assert_eq!(actual_assets.pack_count(), packs_before);
@@ -701,6 +712,10 @@ mod tests {
         assert_eq!(actual_assets.read("ui/late.urc")?, b"later core wins");
         assert_eq!(actual_assets.read("ui/german.urc")?, b"German active");
         assert_eq!(actual_assets.read("ui/duplicate.urc")?, b"duplicate last");
+        assert_eq!(
+            actual_assets.read("ui/duplicate-english.urc")?,
+            b"English duplicate last"
+        );
 
         let mut reference_assets = Assets::open(&base)?;
         let reference = reference_save_fingerprints(&mut reference_assets)?;
@@ -716,6 +731,66 @@ mod tests {
     }
 
     #[test]
+    fn deduplicated_english_identity_seeds_distinct_downstream_language() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-english-dedup-language-{}",
+            std::process::id()
+        ));
+        let game_data = root.join("game-data");
+        let base = game_data.join("base");
+        let languages = game_data.join("languages");
+        fs::create_dir_all(&base)?;
+        fs::create_dir_all(&languages)?;
+        let core_path = base.join("pak3_core.pk3");
+        let english_path = base.join("pak4_english.pk3");
+        let dutch_path = languages.join("pak4_dutch.pk3");
+        write_pack(&core_path, &[("ui/shared.urc", b"same baseline")])?;
+        write_pack(&english_path, &[("ui/shared.urc", b"same baseline")])?;
+        write_pack(&dutch_path, &[("ui/shared.urc", b"Dutch override")])?;
+
+        let core_identity =
+            Assets::open_variant_paths(&base, vec![core_path.clone()])?.fingerprint()?;
+        let english_identity =
+            Assets::open_variant_paths(&base, vec![core_path.clone(), english_path.clone()])?
+                .fingerprint()?;
+        assert_eq!(core_identity, english_identity);
+
+        // pak4_dutch sorts before pak4_english. In the old full-reopen
+        // composition, English therefore overrides Dutch in this combination,
+        // making it distinct from core + Dutch despite the duplicate English
+        // baseline identity.
+        let dutch_only =
+            Assets::open_variant_paths(&base, vec![core_path.clone(), dutch_path.clone()])?
+                .fingerprint()?;
+        let english_then_dutch = Assets::open_variant_paths(
+            &base,
+            vec![core_path.clone(), english_path.clone(), dutch_path.clone()],
+        )?
+        .fingerprint()?;
+        assert_ne!(dutch_only, english_then_dutch);
+
+        let mut assets = Assets::open(&base)?;
+        let actual = assets.save_fingerprints()?;
+        let mut reference_assets = Assets::open(&base)?;
+        let reference = reference_save_fingerprints(&mut reference_assets)?;
+        assert_eq!(
+            actual, reference,
+            "the full legacy vector retains both variants"
+        );
+        assert!(actual.1.contains(&dutch_only));
+        assert!(actual.1.contains(&english_then_dutch));
+
+        drop(assets);
+        drop(reference_assets);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    // Coverage boundary: with stable readable archives, production maps come
+    // from successfully enumerated active ZipArchive handles. A mounted-only
+    // mid-fingerprint error needs an artificial fault seam; this test pins the
+    // failure-record skip contract, but does not claim that end-to-end path.
     fn failed_english_variant_is_skipped_without_adding_a_base() -> Result<()> {
         let root = std::env::temp_dir().join(format!(
             "looking-glass-english-failure-{}",
