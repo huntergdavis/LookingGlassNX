@@ -20,16 +20,30 @@ const HORIZON_ARCHIVE_IO_SEEK_PROGRESS_INTERVAL: u64 = 1024;
 const HORIZON_ARCHIVE_IO_SEEK_PROGRESS_LIMIT: usize = 6;
 
 #[cfg(target_os = "horizon")]
-fn horizon_archive_marker(stage: &str, ordinal: usize, scanned: usize, total: usize) {
+fn horizon_archive_marker(
+    stage: &str,
+    ordinal: usize,
+    scanned: usize,
+    total: usize,
+    started: &Instant,
+) {
     crate::horizon_diag(&format!(
-        "rust:assets:{stage}:pack={ordinal}:entries={scanned}/{total}"
+        "rust:assets:{stage}:pack={ordinal}:entries={scanned}/{total}:elapsed-ms={}",
+        started.elapsed().as_millis()
     ));
 }
 
 #[cfg(target_os = "horizon")]
-fn horizon_archive_io_marker(stage: &str, ordinal: usize, calls: u64, bytes: usize) {
+fn horizon_archive_io_marker(
+    stage: &str,
+    ordinal: usize,
+    calls: u64,
+    bytes: usize,
+    started: &Instant,
+) {
     crate::horizon_diag(&format!(
-        "rust:assets:{stage}:pack={ordinal}:calls={calls}:bytes={bytes}"
+        "rust:assets:{stage}:pack={ordinal}:calls={calls}:bytes={bytes}:elapsed-ms={}",
+        started.elapsed().as_millis()
     ));
 }
 
@@ -44,23 +58,29 @@ type Pk3Archive = ZipArchive<BufReader<ArchiveIo<File>>>;
 #[cfg(target_os = "horizon")]
 struct ArchiveIoTrace {
     ordinal: usize,
+    started: Instant,
     read_calls: u64,
     seek_calls: u64,
     seek_progress_markers: usize,
     first_end_seek_seen: bool,
+    read_error_reported: bool,
+    seek_error_reported: bool,
 }
 
 impl<R> ArchiveIo<R> {
     #[cfg(target_os = "horizon")]
-    fn new(inner: R, ordinal: usize, trace: bool) -> Self {
+    fn new(inner: R, ordinal: usize, trace: bool, started: Instant) -> Self {
         Self {
             inner,
             trace: trace.then_some(ArchiveIoTrace {
                 ordinal,
+                started,
                 read_calls: 0,
                 seek_calls: 0,
                 seek_progress_markers: 0,
                 first_end_seek_seen: false,
+                read_error_reported: false,
+                seek_error_reported: false,
             }),
         }
     }
@@ -81,7 +101,8 @@ impl<R: Read> Read for ArchiveIo<R> {
         #[cfg(target_os = "horizon")]
         if trace_first_read {
             let ordinal = self.trace.as_ref().unwrap().ordinal;
-            horizon_archive_io_marker("pack-io-first-read-begin", ordinal, 0, 0);
+            let started = self.trace.as_ref().unwrap().started;
+            horizon_archive_io_marker("pack-io-first-read-begin", ordinal, 0, 0, &started);
         }
 
         let result = self.inner.read(buffer);
@@ -96,7 +117,23 @@ impl<R: Read> Read for ArchiveIo<R> {
                     "pack-io-first-read-error"
                 };
                 let bytes = result.as_ref().copied().unwrap_or(0);
-                horizon_archive_io_marker(stage, trace.ordinal, trace.read_calls, bytes);
+                trace.read_error_reported = result.is_err();
+                horizon_archive_io_marker(
+                    stage,
+                    trace.ordinal,
+                    trace.read_calls,
+                    bytes,
+                    &trace.started,
+                );
+            } else if result.is_err() && !trace.read_error_reported {
+                trace.read_error_reported = true;
+                horizon_archive_io_marker(
+                    "pack-io-read-error",
+                    trace.ordinal,
+                    trace.read_calls,
+                    0,
+                    &trace.started,
+                );
             }
         }
         result
@@ -112,10 +149,11 @@ impl<R: Seek> Seek for ArchiveIo<R> {
         #[cfg(target_os = "horizon")]
         if trace_first_end_seek {
             let ordinal = self.trace.as_ref().unwrap().ordinal;
+            let started = self.trace.as_ref().unwrap().started;
             if let Some(trace) = &mut self.trace {
                 trace.first_end_seek_seen = true;
             }
-            horizon_archive_io_marker("pack-io-end-seek-begin", ordinal, 0, 0);
+            horizon_archive_io_marker("pack-io-end-seek-begin", ordinal, 0, 0, &started);
         }
 
         let result = self.inner.seek(position);
@@ -129,7 +167,23 @@ impl<R: Seek> Seek for ArchiveIo<R> {
                 } else {
                     "pack-io-end-seek-error"
                 };
-                horizon_archive_io_marker(stage, trace.ordinal, trace.seek_calls, 0);
+                trace.seek_error_reported = result.is_err();
+                horizon_archive_io_marker(
+                    stage,
+                    trace.ordinal,
+                    trace.seek_calls,
+                    0,
+                    &trace.started,
+                );
+            } else if result.is_err() && !trace.seek_error_reported {
+                trace.seek_error_reported = true;
+                horizon_archive_io_marker(
+                    "pack-io-seek-error",
+                    trace.ordinal,
+                    trace.seek_calls,
+                    0,
+                    &trace.started,
+                );
             } else if result.is_ok()
                 && trace.seek_progress_markers < HORIZON_ARCHIVE_IO_SEEK_PROGRESS_LIMIT
                 && trace.seek_calls
@@ -142,6 +196,7 @@ impl<R: Seek> Seek for ArchiveIo<R> {
                     trace.ordinal,
                     trace.seek_calls,
                     0,
+                    &trace.started,
                 );
             }
         }
@@ -381,7 +436,12 @@ impl Assets {
 
     pub fn open(base: &Path) -> Result<Self> {
         #[cfg(target_os = "horizon")]
-        crate::horizon_diag("rust:assets:archive-discovery-begin");
+        let started = Instant::now();
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!(
+            "rust:assets:archive-discovery-begin:elapsed-ms={}",
+            started.elapsed().as_millis()
+        ));
         let paths = fs::read_dir(base)
             .with_context(|| {
                 format!(
@@ -393,22 +453,52 @@ impl Assets {
             .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("pk3")))
             .collect::<Vec<_>>();
         #[cfg(target_os = "horizon")]
-        crate::horizon_diag(&format!("rust:assets:archive-discovery-ready:packs={}", paths.len()));
-        Self::open_paths(base, paths)
+        crate::horizon_diag(&format!(
+            "rust:assets:archive-discovery-ready:packs={}:elapsed-ms={}",
+            paths.len(),
+            started.elapsed().as_millis()
+        ));
+        #[cfg(target_os = "horizon")]
+        {
+            Self::open_paths(base, paths, started)
+        }
+        #[cfg(not(target_os = "horizon"))]
+        {
+            Self::open_paths(base, paths)
+        }
     }
 
-    fn open_paths(base: &Path, mut paths: Vec<PathBuf>) -> Result<Self> {
-        Self::open_paths_with_core_index(base, paths, true)
+    fn open_paths(
+        base: &Path,
+        mut paths: Vec<PathBuf>,
+        #[cfg(target_os = "horizon")] started: Instant,
+    ) -> Result<Self> {
+        #[cfg(target_os = "horizon")]
+        {
+            Self::open_paths_with_core_index(base, paths, true, started)
+        }
+        #[cfg(not(target_os = "horizon"))]
+        {
+            Self::open_paths_with_core_index(base, paths, true)
+        }
     }
 
     fn open_variant_paths(base: &Path, paths: Vec<PathBuf>) -> Result<Self> {
-        Self::open_paths_with_core_index(base, paths, false)
+        #[cfg(target_os = "horizon")]
+        {
+            Self::open_paths_with_core_index(base, paths, false, Instant::now())
+        }
+        #[cfg(not(target_os = "horizon"))]
+        {
+            Self::open_paths_with_core_index(base, paths, false)
+        }
     }
 
     fn open_paths_with_core_index(
         base: &Path,
         mut paths: Vec<PathBuf>,
         cache_core_index: bool,
+        #[cfg(target_os = "horizon")] started: Instant,
     ) -> Result<Self> {
         paths.sort_by_key(|path| archive_sort_key(path));
         if paths.is_empty() {
@@ -424,27 +514,27 @@ impl Assets {
             let trace_pack = cache_core_index && packs.len() < HORIZON_ARCHIVE_TRACE_PACK_LIMIT;
             #[cfg(target_os = "horizon")]
             if trace_pack {
-                horizon_archive_marker("pack-open-begin", ordinal, 0, 0);
+                horizon_archive_marker("pack-open-begin", ordinal, 0, 0, &started);
             }
             let archive_file = match File::open(&path) {
                 Ok(file) => {
                     #[cfg(target_os = "horizon")]
                     if trace_pack {
-                        horizon_archive_marker("pack-file-open-ready", ordinal, 0, 0);
-                        horizon_archive_marker("pack-zip-parse-begin", ordinal, 0, 0);
+                        horizon_archive_marker("pack-file-open-ready", ordinal, 0, 0, &started);
+                        horizon_archive_marker("pack-zip-parse-begin", ordinal, 0, 0, &started);
                     }
                     file
                 }
                 Err(error) => {
                     #[cfg(target_os = "horizon")]
                     if trace_pack {
-                        horizon_archive_marker("pack-file-open-error", ordinal, 0, 0);
+                        horizon_archive_marker("pack-file-open-error", ordinal, 0, 0, &started);
                     }
                     return Err(error.into());
                 }
             };
             #[cfg(target_os = "horizon")]
-            let archive_reader = ArchiveIo::new(archive_file, ordinal, trace_pack);
+            let archive_reader = ArchiveIo::new(archive_file, ordinal, trace_pack, started);
             #[cfg(not(target_os = "horizon"))]
             let archive_reader = ArchiveIo::new(archive_file);
             // The ZIP crate reads central-directory fields in many small calls;
@@ -454,7 +544,7 @@ impl Assets {
                 Err(error) => {
                     #[cfg(target_os = "horizon")]
                     if trace_pack {
-                        horizon_archive_marker("pack-zip-parse-error", ordinal, 0, 0);
+                        horizon_archive_marker("pack-zip-parse-error", ordinal, 0, 0, &started);
                     }
                     return Err(error).with_context(|| format!("Invalid PK3: {}", path.display()));
                 }
@@ -462,7 +552,13 @@ impl Assets {
             let entry_count = pack.len();
             #[cfg(target_os = "horizon")]
             if trace_pack {
-                horizon_archive_marker("pack-open-ready", ordinal, entry_count, entry_count);
+                horizon_archive_marker(
+                    "pack-open-ready",
+                    ordinal,
+                    entry_count,
+                    entry_count,
+                    &started,
+                );
             }
             #[cfg(target_os = "horizon")]
             let progress_step = entry_count.saturating_add(HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT - 1)
@@ -484,13 +580,25 @@ impl Assets {
                     if trace_pack
                         && (scanned % progress_step == 0 || scanned == entry_count)
                     {
-                        horizon_archive_marker("pack-index-progress", ordinal, scanned, entry_count);
+                        horizon_archive_marker(
+                            "pack-index-progress",
+                            ordinal,
+                            scanned,
+                            entry_count,
+                            &started,
+                        );
                     }
                 }
             }
             #[cfg(target_os = "horizon")]
             if trace_pack {
-                horizon_archive_marker("pack-index-ready", ordinal, entry_count, entry_count);
+                horizon_archive_marker(
+                    "pack-index-ready",
+                    ordinal,
+                    entry_count,
+                    entry_count,
+                    &started,
+                );
             }
             packs.push(pack);
         }
@@ -744,7 +852,7 @@ mod tests {
     fn test_archive_io<R>(inner: R) -> ArchiveIo<R> {
         #[cfg(target_os = "horizon")]
         {
-            ArchiveIo::new(inner, 0, false)
+            ArchiveIo::new(inner, 0, false, Instant::now())
         }
         #[cfg(not(target_os = "horizon"))]
         {
