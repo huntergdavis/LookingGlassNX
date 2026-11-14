@@ -545,10 +545,17 @@ mod tests {
         Ok(())
     }
 
-    fn fixture_root(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target/test-fixtures")
-            .join(format!("{name}-{}", std::process::id()))
+    fn fixture_root(name: &str) -> Result<PathBuf> {
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-fixtures");
+        fs::create_dir_all(&parent)?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = parent.join(format!("{name}-{}-{nonce}", std::process::id()));
+        // Exclusive creation makes cleanup ownership unambiguous, even after
+        // stale fixtures or PID reuse from an earlier interrupted run.
+        fs::create_dir(&root)?;
+        Ok(root)
     }
 
     // Retained full-reopen oracle for the pre-optimization legacy algorithm.
@@ -647,7 +654,7 @@ mod tests {
 
     #[test]
     fn mounted_english_reuse_matches_full_reopen_legacy_vector() -> Result<()> {
-        let root = fixture_root("english-reuse");
+        let root = fixture_root("english-reuse")?;
         let game_data = root.join("game-data");
         let base = game_data.join("base");
         let languages = game_data.join("languages");
@@ -735,7 +742,7 @@ mod tests {
 
     #[test]
     fn deduplicated_english_identity_seeds_distinct_downstream_language() -> Result<()> {
-        let root = fixture_root("english-dedup-language");
+        let root = fixture_root("english-dedup-language")?;
         let game_data = root.join("game-data");
         let base = game_data.join("base");
         let languages = game_data.join("languages");
@@ -799,8 +806,7 @@ mod tests {
     // mid-fingerprint error needs an artificial fault seam; this test pins the
     // failure-record skip contract, but does not claim that end-to-end path.
     fn failed_english_variant_is_skipped_without_adding_a_base() -> Result<()> {
-        let root = fixture_root("english-failure");
-        fs::create_dir_all(&root)?;
+        let root = fixture_root("english-failure")?;
         let pack_path = root.join("pak0.pk3");
         write_pack(&pack_path, &[("ui/name", b"core")])?;
         let mut mounted = Assets::open(&root)?;
@@ -848,7 +854,7 @@ mod tests {
 
     #[test]
     fn invalid_external_english_variant_keeps_skip_behavior() -> Result<()> {
-        let root = fixture_root("english-open-error");
+        let root = fixture_root("english-open-error")?;
         let game_data = root.join("game-data");
         let base = game_data.join("base");
         let languages = game_data.join("languages");
