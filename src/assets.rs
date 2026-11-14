@@ -735,7 +735,258 @@ fn is_english_pack(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{
+        cell::Cell,
+        io::{Cursor, ErrorKind, Write},
+        rc::Rc,
+    };
+
+    fn test_archive_io<R>(inner: R) -> ArchiveIo<R> {
+        #[cfg(target_os = "horizon")]
+        {
+            ArchiveIo::new(inner, 0, false)
+        }
+        #[cfg(not(target_os = "horizon"))]
+        {
+            ArchiveIo::new(inner)
+        }
+    }
+
+    type EntrySnapshot = (String, u64, u32, Vec<u8>);
+
+    fn archive_snapshot<R: Read + Seek>(
+        reader: R,
+    ) -> std::result::Result<Vec<EntrySnapshot>, String> {
+        let mut archive = ZipArchive::new(reader).map_err(|error| error.to_string())?;
+        let mut snapshot = Vec::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+            let name = entry.name().to_owned();
+            let size = entry.size();
+            let crc = entry.crc32();
+            let mut contents = Vec::new();
+            entry
+                .read_to_end(&mut contents)
+                .map_err(|error| error.to_string())?;
+            snapshot.push((name, size, crc, contents));
+        }
+        Ok(snapshot)
+    }
+
+    fn write_zip_bytes(entries: &[(&str, &[u8])], comment: &str) -> Result<Vec<u8>> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive.set_comment(comment.to_owned());
+        for (name, contents) in entries {
+            archive.start_file(*name, zip::write::FileOptions::default())?;
+            archive.write_all(contents)?;
+        }
+        Ok(archive.finish()?.into_inner())
+    }
+
+    fn file_fingerprint(path: &Path) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut archive = ZipArchive::new(File::open(path)?)?;
+        let mut entries = BTreeMap::new();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index)?;
+            if !entry.is_dir() {
+                entries.insert(normalize(entry.name()), index);
+            }
+        }
+        let mut hash = Sha256::new();
+        for (name, index) in entries {
+            let entry = archive.by_index(index)?;
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+            hash.update(entry.size().to_le_bytes());
+            hash.update(entry.crc32().to_le_bytes());
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+
+    #[test]
+    fn buffered_pk3_reader_matches_file_for_valid_empty_malformed_and_commented_archives(
+    ) -> Result<()> {
+        let entries = [
+            ("UI\\same.bin", b"first normalized duplicate".as_slice()),
+            ("ui/same.bin", b"last normalized duplicate".as_slice()),
+            ("maps/level.bsp", &[0, 1, 2, 3, 0xff]),
+        ];
+        let valid = write_zip_bytes(&entries, "")?;
+        let empty = write_zip_bytes(&[], "")?;
+        // EOCD comments are capped at 65535 bytes by the ZIP format.
+        let long_comment = write_zip_bytes(&entries, &"c".repeat(60_000))?;
+        let mut truncated = valid.clone();
+        truncated.truncate(truncated.len() - 7);
+        let malformed = b"PK\x03\x04truncated local header".to_vec();
+
+        let root = fixture_root("buffered-archive-parity")?;
+        for (label, bytes) in [
+            ("valid with normalized duplicates", valid),
+            ("empty", empty),
+            ("long EOCD comment", long_comment),
+            ("truncated", truncated),
+            ("malformed", malformed),
+        ] {
+            let case_dir = root.join(label.replace(' ', "-"));
+            fs::create_dir(&case_dir)?;
+            let path = case_dir.join("pak0.pk3");
+            fs::write(&path, &bytes)?;
+            let file_result = archive_snapshot(File::open(&path)?);
+            let buffered_result =
+                archive_snapshot(BufReader::new(test_archive_io(File::open(&path)?)));
+            assert_eq!(buffered_result, file_result, "{label} archive parity");
+            if file_result.is_ok() {
+                let raw_fingerprint = file_fingerprint(&path)?;
+                let buffered_fingerprint =
+                    Assets::open_variant_paths(&case_dir, vec![path.clone()])?.fingerprint()?;
+                assert_eq!(
+                    buffered_fingerprint, raw_fingerprint,
+                    "{label} fingerprint parity"
+                );
+            }
+        }
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    struct CountingIo {
+        cursor: Cursor<Vec<u8>>,
+        reads: Rc<Cell<usize>>,
+        seeks: Rc<Cell<usize>>,
+    }
+
+    impl Read for CountingIo {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            self.cursor.read(buffer)
+        }
+    }
+
+    impl Seek for CountingIo {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.seeks.set(self.seeks.get() + 1);
+            self.cursor.seek(position)
+        }
+    }
+
+    struct FaultIo {
+        cursor: Cursor<Vec<u8>>,
+        fail_read: bool,
+        fail_seek: bool,
+    }
+
+    impl Read for FaultIo {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.fail_read {
+                self.fail_read = false;
+                return Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "injected read",
+                ));
+            }
+            self.cursor.read(buffer)
+        }
+    }
+
+    impl Seek for FaultIo {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            if self.fail_seek {
+                self.fail_seek = false;
+                return Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "injected seek",
+                ));
+            }
+            self.cursor.seek(position)
+        }
+    }
+
+    #[test]
+    fn archive_io_forwards_positions_and_read_seek_errors() -> Result<()> {
+        let mut direct = test_archive_io(Cursor::new(b"abcdef".to_vec()));
+        assert_eq!(direct.seek(SeekFrom::Start(3))?, 3);
+        let mut bytes = [0; 2];
+        assert_eq!(direct.read(&mut bytes)?, 2);
+        assert_eq!(&bytes, b"de");
+        assert_eq!(direct.seek(SeekFrom::Current(-1))?, 4);
+
+        let mut read_fault = test_archive_io(FaultIo {
+            cursor: Cursor::new(b"data".to_vec()),
+            fail_read: true,
+            fail_seek: false,
+        });
+        assert_eq!(
+            read_fault.read(&mut bytes).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+
+        let mut seek_fault = test_archive_io(FaultIo {
+            cursor: Cursor::new(b"data".to_vec()),
+            fail_read: false,
+            fail_seek: true,
+        });
+        assert_eq!(
+            seek_fault.seek(SeekFrom::Start(1)).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn buffered_pk3_reader_reduces_underlying_reads_without_changing_entries() -> Result<()> {
+        let entries = (0..160)
+            .map(|index| {
+                let name = format!("assets/entry-{index:03}.bin");
+                let contents = vec![index as u8; 512];
+                (name, contents)
+            })
+            .collect::<Vec<_>>();
+        let entry_refs = entries
+            .iter()
+            .map(|(name, contents)| (name.as_str(), contents.as_slice()))
+            .collect::<Vec<_>>();
+        let bytes = write_zip_bytes(&entry_refs, "")?;
+
+        let direct_reads = Rc::new(Cell::new(0));
+        let direct_seeks = Rc::new(Cell::new(0));
+        let direct_io = CountingIo {
+            cursor: Cursor::new(bytes.clone()),
+            reads: Rc::clone(&direct_reads),
+            seeks: Rc::clone(&direct_seeks),
+        };
+        let direct_snapshot =
+            archive_snapshot(test_archive_io(direct_io)).map_err(|error| anyhow::anyhow!(error))?;
+
+        let buffered_reads = Rc::new(Cell::new(0));
+        let buffered_seeks = Rc::new(Cell::new(0));
+        let buffered_io = CountingIo {
+            cursor: Cursor::new(bytes),
+            reads: Rc::clone(&buffered_reads),
+            seeks: Rc::clone(&buffered_seeks),
+        };
+        let buffered_snapshot = archive_snapshot(BufReader::new(test_archive_io(buffered_io)))
+            .map_err(|error| anyhow::anyhow!(error))?;
+
+        assert_eq!(buffered_snapshot, direct_snapshot);
+        assert!(
+            buffered_reads.get() < direct_reads.get(),
+            "buffered physical reads {} should be fewer than direct reads {}",
+            buffered_reads.get(),
+            direct_reads.get()
+        );
+        // Report both operations without asserting seeks fall: BufReader may
+        // reposition or discard buffered data during a seek.
+        eprintln!(
+            "PK3 underlying IO operations: direct reads={} seeks={}; buffered reads={} seeks={}",
+            direct_reads.get(),
+            direct_seeks.get(),
+            buffered_reads.get(),
+            buffered_seeks.get()
+        );
+        Ok(())
+    }
 
     fn write_pack(path: &Path, entries: &[(&str, &[u8])]) -> Result<()> {
         let mut archive = zip::ZipWriter::new(File::create(path)?);
