@@ -746,7 +746,13 @@ mod tests {
         let dutch_path = languages.join("pak4_dutch.pk3");
         write_pack(&core_path, &[("ui/shared.urc", b"same baseline")])?;
         write_pack(&english_path, &[("ui/shared.urc", b"same baseline")])?;
-        write_pack(&dutch_path, &[("ui/shared.urc", b"Dutch override")])?;
+        write_pack(
+            &dutch_path,
+            &[
+                ("ui/shared.urc", b"Dutch override"),
+                ("ui/dutch-only.urc", b"Dutch addition"),
+            ],
+        )?;
 
         let core_identity =
             Assets::open_variant_paths(&base, vec![core_path.clone()])?.fingerprint()?;
@@ -768,6 +774,7 @@ mod tests {
         )?
         .fingerprint()?;
         assert_ne!(dutch_only, english_then_dutch);
+        assert_ne!(core_identity, english_then_dutch);
 
         let mut assets = Assets::open(&base)?;
         let actual = assets.save_fingerprints()?;
