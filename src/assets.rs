@@ -748,7 +748,27 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_external_english_variant_keeps_skip_behavior() -> Result<()> {
+    fn duplicate_english_identity_still_adds_a_language_base() {
+        let core = PathBuf::from("pak0.pk3");
+        let english = PathBuf::from("pak4_english.pk3");
+        let mut legacy = vec!["same-identity".to_owned()];
+        let mut bases = vec![vec![core.clone()]];
+
+        record_english_variant(
+            &mut legacy,
+            &mut bases,
+            vec![core.clone(), english.clone()],
+            Ok("same-identity".to_owned()),
+        );
+        legacy.sort();
+        legacy.dedup();
+
+        assert_eq!(legacy, vec!["same-identity".to_owned()]);
+        assert_eq!(bases, vec![vec![core.clone()], vec![core, english]]);
+    }
+
+    #[test]
+    fn invalid_external_english_variant_keeps_skip_behavior() -> Result<()> {
         let root = std::env::temp_dir().join(format!(
             "looking-glass-english-open-error-{}",
             std::process::id()
