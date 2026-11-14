@@ -67,10 +67,16 @@ fn save_fingerprint_variant(index: usize) -> Option<&'static str> {
 }
 
 /// Read-only PK3 mount. Later alphabetically sorted packs override earlier packs.
+/// Archive files must remain unchanged while this mount is in use; core
+/// save identity reuses the metadata captured by this mount.
 pub struct Assets {
     packs: Vec<ZipArchive<File>>,
     paths: Vec<PathBuf>,
     entries: BTreeMap<String, (usize, usize)>,
+    // Same alphabetical override rules as `entries`, with language packs
+    // omitted. Built during the initial archive walk so save identity does
+    // not reopen and re-enumerate every core archive.
+    core_entries: BTreeMap<String, (usize, usize)>,
     pub base: PathBuf,
 }
 
@@ -84,13 +90,20 @@ impl Assets {
         &mut self,
         diagnostic: Option<(&str, &Instant)>,
     ) -> Result<String> {
+        Self::fingerprint_entries(&mut self.packs, &self.entries, diagnostic)
+    }
+    fn fingerprint_entries(
+        packs: &mut [ZipArchive<File>],
+        entries: &BTreeMap<String, (usize, usize)>,
+        diagnostic: Option<(&str, &Instant)>,
+    ) -> Result<String> {
         use sha2::{Digest, Sha256};
         // Bound progress output to three numeric checkpoints per fingerprint.
         const PROGRESS_ENTRIES: [usize; 3] = [4096, 16384, 65536];
         let mut hash = Sha256::new();
         let mut next_progress = 0;
-        for (index_in_map, (name, &(pack, index))) in self.entries.iter().enumerate() {
-            let entry = self.packs[pack].by_index(index)?;
+        for (index_in_map, (name, &(pack, index))) in entries.iter().enumerate() {
+            let entry = packs[pack].by_index(index)?;
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name.as_bytes());
             hash.update(entry.size().to_le_bytes());
@@ -126,20 +139,38 @@ impl Assets {
     }
 
     fn open_paths(base: &Path, mut paths: Vec<PathBuf>) -> Result<Self> {
+        Self::open_paths_with_core_index(base, paths, true)
+    }
+
+    fn open_variant_paths(base: &Path, paths: Vec<PathBuf>) -> Result<Self> {
+        Self::open_paths_with_core_index(base, paths, false)
+    }
+
+    fn open_paths_with_core_index(
+        base: &Path,
+        mut paths: Vec<PathBuf>,
+        cache_core_index: bool,
+    ) -> Result<Self> {
         paths.sort_by_key(|p| p.file_name().unwrap_or_default().to_ascii_lowercase());
         if paths.is_empty() {
             bail!("No PK3 archives found in {}", base.display());
         }
         let mut entries = BTreeMap::new();
+        let mut core_entries = BTreeMap::new();
         let mut packs = Vec::new();
         for path in &paths {
             let mut pack = ZipArchive::new(File::open(&path)?)
                 .with_context(|| format!("Invalid PK3: {}", path.display()))?;
             let p = packs.len();
+            let is_core = !is_language_pack(path);
             for i in 0..pack.len() {
                 let entry = pack.by_index(i)?;
                 if !entry.is_dir() {
-                    entries.insert(normalize(entry.name()), (p, i));
+                    let name = normalize(entry.name());
+                    entries.insert(name.clone(), (p, i));
+                    if is_core && cache_core_index {
+                        core_entries.insert(name, (p, i));
+                    }
                 }
             }
             packs.push(pack);
@@ -148,6 +179,7 @@ impl Assets {
             packs,
             paths,
             entries,
+            core_entries,
             base: base.to_path_buf(),
         })
     }
@@ -164,13 +196,15 @@ impl Assets {
             .filter(|p| !is_language_pack(p))
             .cloned()
             .collect::<Vec<_>>();
-        save_fingerprint_marker("core-open:begin", started.as_ref());
-        let mut core_assets = Self::open_paths(&self.base, core.clone())?;
-        save_fingerprint_marker("core-open:ready", started.as_ref());
+        if core.is_empty() {
+            bail!("No PK3 archives found in {}", self.base.display());
+        }
         save_fingerprint_marker("core-fingerprint:begin", started.as_ref());
-        let identity = core_assets
-            .fingerprint_with_progress(started.as_ref().map(|started| ("core", started)))?;
-        drop(core_assets);
+        let identity = Self::fingerprint_entries(
+            &mut self.packs,
+            &self.core_entries,
+            started.as_ref().map(|started| ("core", started)),
+        )?;
         save_fingerprint_marker("core-fingerprint:ready", started.as_ref());
         save_fingerprint_marker("mounted-fingerprint:begin", started.as_ref());
         let mounted =
@@ -215,7 +249,7 @@ impl Assets {
                 save_fingerprint_variant_marker(stage, "open:begin", started.as_ref());
             }
             // Includes the previous save identity that kept English in the core.
-            if let Ok(mut mounted) = Self::open_paths(&self.base, paths.clone()) {
+            if let Ok(mut mounted) = Self::open_variant_paths(&self.base, paths.clone()) {
                 if let Some(stage) = stage {
                     save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
                     save_fingerprint_variant_marker(stage, "fingerprint:begin", started.as_ref());
@@ -249,7 +283,7 @@ impl Assets {
                     save_fingerprint_variant_marker(stage, "open:begin", started.as_ref());
                 }
                 // An unreadable inactive cache must not prevent launching.
-                if let Ok(mut mounted) = Self::open_paths(&self.base, paths) {
+                if let Ok(mut mounted) = Self::open_variant_paths(&self.base, paths) {
                     if let Some(stage) = stage {
                         save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
                         save_fingerprint_variant_marker(
@@ -408,6 +442,134 @@ mod tests {
             fs::remove_dir(&path)
                 .with_context(|| format!("remove directory {}", path.display()))?;
         }
+        Ok(())
+    }
+    #[test]
+    fn cached_core_index_preserves_core_override_when_language_pack_is_mounted() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("looking-glass-core-index-{}", std::process::id()));
+        let base = root.join("game-data/base");
+        fs::create_dir_all(&base)?;
+        let write = |path: &Path, text: &[u8]| -> Result<()> {
+            let mut z = zip::ZipWriter::new(File::create(path)?);
+            z.start_file("UI\\main.urc", zip::write::FileOptions::default())?;
+            z.write_all(text)?;
+            z.finish()?;
+            Ok(())
+        };
+        write(&base.join("pak0.pk3"), b"base")?;
+        write(&base.join("pak4_english.pk3"), b"translation")?;
+        write(&base.join("pak5_mod.pk3"), b"core override")?;
+
+        let mut mounted = Assets::open(&base)?;
+        let mut rebuilt_core = Assets::open_paths(
+            &base,
+            vec![base.join("pak0.pk3"), base.join("pak5_mod.pk3")],
+        )?;
+        assert_eq!(mounted.read("ui/main.urc")?, b"core override");
+        assert_eq!(
+            mounted.save_fingerprints()?.0,
+            rebuilt_core.fingerprint()?,
+            "cached core map must preserve sorted core-pack overrides while excluding translations"
+        );
+        drop(mounted);
+        drop(rebuilt_core);
+        for path in [
+            base.join("pak0.pk3"),
+            base.join("pak4_english.pk3"),
+            base.join("pak5_mod.pk3"),
+        ] {
+            fs::remove_file(path)?;
+        }
+        fs::remove_dir(&base)?;
+        fs::remove_dir(root.join("game-data"))?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+    #[test]
+    fn save_fingerprints_still_rejects_a_mount_with_only_language_archives() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-language-only-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        let path = root.join("pak4_english.pk3");
+        let mut z = zip::ZipWriter::new(File::create(&path)?);
+        z.start_file("ui/main.urc", zip::write::FileOptions::default())?;
+        z.write_all(b"translation")?;
+        z.finish()?;
+
+        let mut mounted = Assets::open(&root)?;
+        let error = mounted.save_fingerprints().unwrap_err().to_string();
+        assert_eq!(
+            error,
+            format!("No PK3 archives found in {}", root.display())
+        );
+        drop(mounted);
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+    #[test]
+    fn core_identity_uses_open_mount_when_archive_path_is_replaced() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-core-replaced-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        let pack = root.join("pak0.pk3");
+        let replacement = root.join("replacement.pk3");
+        let backup = root.join("original.pk3");
+        let write = |path: &Path, text: &[u8]| -> Result<()> {
+            let mut z = zip::ZipWriter::new(File::create(path)?);
+            z.start_file("ui/main.urc", zip::write::FileOptions::default())?;
+            z.write_all(text)?;
+            z.finish()?;
+            Ok(())
+        };
+        write(&pack, b"mounted data")?;
+        let mut mounted = Assets::open(&root)?;
+        let mounted_id = mounted.fingerprint()?;
+
+        write(&replacement, b"replacement data")?;
+        fs::rename(&pack, &backup)?;
+        fs::rename(&replacement, &pack)?;
+        let cached_id = mounted.save_fingerprints()?.0;
+        let current_id = Assets::open(&root)?.fingerprint()?;
+        assert_eq!(
+            cached_id, mounted_id,
+            "save identity follows the active read-only mount"
+        );
+        assert_ne!(
+            cached_id, current_id,
+            "replacement files are outside the documented immutable-corpus contract"
+        );
+
+        drop(mounted);
+        fs::remove_file(pack)?;
+        fs::remove_file(backup)?;
+        fs::remove_dir(root)?;
+        Ok(())
+    }
+    #[test]
+    fn open_still_rejects_malformed_archive_before_caching_core_index() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-malformed-pack-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        let path = root.join("pak0.pk3");
+        fs::write(&path, b"not a zip archive")?;
+        let error = Assets::open(&root)
+            .err()
+            .map(|error| error.to_string())
+            .ok_or_else(|| anyhow::anyhow!("malformed archive unexpectedly opened"))?;
+        assert!(
+            error.contains("Invalid PK3"),
+            "unexpected archive error: {error}"
+        );
+        fs::remove_file(path)?;
+        fs::remove_dir(root)?;
         Ok(())
     }
     #[test]
