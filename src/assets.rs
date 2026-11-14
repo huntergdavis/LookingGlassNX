@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs::{self, File},
-    io::Read,
+    io::{BufReader, Read},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -146,7 +146,7 @@ fn record_english_variant(
 /// mount is in use; save identities reuse the metadata and handles captured by
 /// this mount.
 pub struct Assets {
-    packs: Vec<ZipArchive<File>>,
+    packs: Vec<ZipArchive<BufReader<File>>>,
     paths: Vec<PathBuf>,
     entries: BTreeMap<String, (usize, usize)>,
     // Same alphabetical override rules as `entries`, with language packs
@@ -169,7 +169,7 @@ impl Assets {
         Self::fingerprint_entries(&mut self.packs, &self.entries, diagnostic)
     }
     fn fingerprint_entries(
-        packs: &mut [ZipArchive<File>],
+        packs: &mut [ZipArchive<BufReader<File>>],
         entries: &BTreeMap<String, (usize, usize)>,
         diagnostic: Option<(&str, &Instant)>,
     ) -> Result<String> {
@@ -202,7 +202,7 @@ impl Assets {
     }
 
     fn entries_for_pack(
-        pack: &mut ZipArchive<File>,
+        pack: &mut ZipArchive<BufReader<File>>,
         pack_index: usize,
     ) -> Result<BTreeMap<String, (usize, usize)>> {
         let mut entries = BTreeMap::new();
@@ -316,7 +316,9 @@ impl Assets {
                     return Err(error.into());
                 }
             };
-            let mut pack = match ZipArchive::new(archive_file) {
+            // The ZIP crate reads central-directory fields in many small calls;
+            // buffer SD-backed files so each field does not require a separate read.
+            let mut pack = match ZipArchive::new(BufReader::new(archive_file)) {
                 Ok(pack) => pack,
                 Err(error) => {
                     #[cfg(target_os = "horizon")]
