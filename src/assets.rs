@@ -15,13 +15,11 @@ const HORIZON_ARCHIVE_TRACE_PACK_LIMIT: usize = 8;
 #[cfg(target_os = "horizon")]
 const HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT: usize = 8;
 
+#[cfg(target_os = "horizon")]
 fn horizon_archive_marker(stage: &str, ordinal: usize, scanned: usize, total: usize) {
-    #[cfg(target_os = "horizon")]
     crate::horizon_diag(&format!(
         "rust:assets:{stage}:pack={ordinal}:entries={scanned}/{total}"
     ));
-    #[cfg(not(target_os = "horizon"))]
-    let _ = (stage, ordinal, scanned, total);
 }
 
 fn save_fingerprint_start() -> Option<Instant> {
@@ -292,21 +290,23 @@ impl Assets {
         let mut entries = BTreeMap::new();
         let mut core_entries = BTreeMap::new();
         let mut packs = Vec::new();
-        for (pack_index, path) in paths.iter().enumerate() {
-            let ordinal = pack_index + 1;
+        for path in &paths {
             #[cfg(target_os = "horizon")]
-            let trace_pack = cache_core_index && pack_index < HORIZON_ARCHIVE_TRACE_PACK_LIMIT;
-            #[cfg(not(target_os = "horizon"))]
-            let trace_pack = false;
+            let ordinal = packs.len() + 1;
+            #[cfg(target_os = "horizon")]
+            let trace_pack = cache_core_index && packs.len() < HORIZON_ARCHIVE_TRACE_PACK_LIMIT;
+            #[cfg(target_os = "horizon")]
             if trace_pack {
                 horizon_archive_marker("pack-open-begin", ordinal, 0, 0);
             }
             let mut pack = ZipArchive::new(File::open(&path)?)
                 .with_context(|| format!("Invalid PK3: {}", path.display()))?;
             let entry_count = pack.len();
+            #[cfg(target_os = "horizon")]
             if trace_pack {
                 horizon_archive_marker("pack-open-ready", ordinal, entry_count, entry_count);
             }
+            #[cfg(target_os = "horizon")]
             let progress_step = entry_count.saturating_add(HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT - 1)
                 / HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT;
             let p = packs.len();
@@ -320,13 +320,17 @@ impl Assets {
                         core_entries.insert(name, (p, i));
                     }
                 }
-                let scanned = i + 1;
-                if trace_pack
-                    && (scanned % progress_step == 0 || scanned == entry_count)
+                #[cfg(target_os = "horizon")]
                 {
-                    horizon_archive_marker("pack-index-progress", ordinal, scanned, entry_count);
+                    let scanned = i + 1;
+                    if trace_pack
+                        && (scanned % progress_step == 0 || scanned == entry_count)
+                    {
+                        horizon_archive_marker("pack-index-progress", ordinal, scanned, entry_count);
+                    }
                 }
             }
+            #[cfg(target_os = "horizon")]
             if trace_pack {
                 horizon_archive_marker("pack-index-ready", ordinal, entry_count, entry_count);
             }
