@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs::{self, File},
-    io::{BufReader, Read},
+    io::{self, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -14,12 +14,137 @@ const MAX_ENTRY: u64 = 128 * 1024 * 1024;
 const HORIZON_ARCHIVE_TRACE_PACK_LIMIT: usize = 8;
 #[cfg(target_os = "horizon")]
 const HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT: usize = 8;
+#[cfg(target_os = "horizon")]
+const HORIZON_ARCHIVE_IO_SEEK_PROGRESS_INTERVAL: u64 = 1024;
+#[cfg(target_os = "horizon")]
+const HORIZON_ARCHIVE_IO_SEEK_PROGRESS_LIMIT: usize = 6;
 
 #[cfg(target_os = "horizon")]
 fn horizon_archive_marker(stage: &str, ordinal: usize, scanned: usize, total: usize) {
     crate::horizon_diag(&format!(
         "rust:assets:{stage}:pack={ordinal}:entries={scanned}/{total}"
     ));
+}
+
+#[cfg(target_os = "horizon")]
+fn horizon_archive_io_marker(stage: &str, ordinal: usize, calls: u64, bytes: usize) {
+    crate::horizon_diag(&format!(
+        "rust:assets:{stage}:pack={ordinal}:calls={calls}:bytes={bytes}"
+    ));
+}
+
+struct ArchiveIo<R> {
+    inner: R,
+    #[cfg(target_os = "horizon")]
+    trace: Option<ArchiveIoTrace>,
+}
+
+#[cfg(target_os = "horizon")]
+struct ArchiveIoTrace {
+    ordinal: usize,
+    read_calls: u64,
+    seek_calls: u64,
+    seek_progress_markers: usize,
+    first_end_seek_seen: bool,
+}
+
+impl<R> ArchiveIo<R> {
+    #[cfg(target_os = "horizon")]
+    fn new(inner: R, ordinal: usize, trace: bool) -> Self {
+        Self {
+            inner,
+            trace: trace.then_some(ArchiveIoTrace {
+                ordinal,
+                read_calls: 0,
+                seek_calls: 0,
+                seek_progress_markers: 0,
+                first_end_seek_seen: false,
+            }),
+        }
+    }
+
+    #[cfg(not(target_os = "horizon"))]
+    fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+impl<R: Read> Read for ArchiveIo<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        #[cfg(target_os = "horizon")]
+        let trace_first_read = self
+            .trace
+            .as_ref()
+            .is_some_and(|trace| trace.read_calls == 0);
+        #[cfg(target_os = "horizon")]
+        if trace_first_read {
+            let ordinal = self.trace.as_ref().unwrap().ordinal;
+            horizon_archive_io_marker("pack-io-first-read-begin", ordinal, 0, 0);
+        }
+
+        let result = self.inner.read(buffer);
+
+        #[cfg(target_os = "horizon")]
+        if let Some(trace) = &mut self.trace {
+            trace.read_calls = trace.read_calls.saturating_add(1);
+            if trace_first_read {
+                let stage = if result.is_ok() {
+                    "pack-io-first-read-ready"
+                } else {
+                    "pack-io-first-read-error"
+                };
+                let bytes = result.as_ref().copied().unwrap_or(0);
+                horizon_archive_io_marker(stage, trace.ordinal, trace.read_calls, bytes);
+            }
+        }
+        result
+    }
+}
+
+impl<R: Seek> Seek for ArchiveIo<R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        #[cfg(target_os = "horizon")]
+        let trace_first_end_seek = self.trace.as_ref().is_some_and(|trace| {
+            !trace.first_end_seek_seen && matches!(position, SeekFrom::End(0))
+        });
+        #[cfg(target_os = "horizon")]
+        if trace_first_end_seek {
+            let ordinal = self.trace.as_ref().unwrap().ordinal;
+            if let Some(trace) = &mut self.trace {
+                trace.first_end_seek_seen = true;
+            }
+            horizon_archive_io_marker("pack-io-end-seek-begin", ordinal, 0, 0);
+        }
+
+        let result = self.inner.seek(position);
+
+        #[cfg(target_os = "horizon")]
+        if let Some(trace) = &mut self.trace {
+            trace.seek_calls = trace.seek_calls.saturating_add(1);
+            if trace_first_end_seek {
+                let stage = if result.is_ok() {
+                    "pack-io-end-seek-ready"
+                } else {
+                    "pack-io-end-seek-error"
+                };
+                horizon_archive_io_marker(stage, trace.ordinal, trace.seek_calls, 0);
+            } else if result.is_ok()
+                && trace.seek_progress_markers < HORIZON_ARCHIVE_IO_SEEK_PROGRESS_LIMIT
+                && trace.seek_calls
+                    >= (trace.seek_progress_markers as u64 + 1)
+                        * HORIZON_ARCHIVE_IO_SEEK_PROGRESS_INTERVAL
+            {
+                trace.seek_progress_markers += 1;
+                horizon_archive_io_marker(
+                    "pack-io-seek-progress",
+                    trace.ordinal,
+                    trace.seek_calls,
+                    0,
+                );
+            }
+        }
+        result
+    }
 }
 
 fn save_fingerprint_start() -> Option<Instant> {
@@ -316,9 +441,13 @@ impl Assets {
                     return Err(error.into());
                 }
             };
+            #[cfg(target_os = "horizon")]
+            let archive_reader = ArchiveIo::new(archive_file, ordinal, trace_pack);
+            #[cfg(not(target_os = "horizon"))]
+            let archive_reader = ArchiveIo::new(archive_file);
             // The ZIP crate reads central-directory fields in many small calls;
             // buffer SD-backed files so each field does not require a separate read.
-            let mut pack = match ZipArchive::new(BufReader::new(archive_file)) {
+            let mut pack = match ZipArchive::new(BufReader::new(archive_reader)) {
                 Ok(pack) => pack,
                 Err(error) => {
                     #[cfg(target_os = "horizon")]
