@@ -534,6 +534,8 @@ mod start;
 
 pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:viewer-run-entered");
+    #[cfg(target_os = "horizon")]
     anyhow::ensure!(
         options.coop.is_none(),
         "Co-op is disabled on Horizon until worker shutdown is coordinated"
@@ -572,7 +574,11 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     let store = Store::for_assets(options.save_dir.clone(), &mut assets)?;
     #[cfg(target_os = "horizon")]
     crate::horizon_diag("rust:save-store-ready");
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:viewer-maps-enumeration-begin");
     let maps = assets.maps();
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:viewer-maps-enumeration-ready");
     let mut audio = Audio::new(options.no_audio, options.audio_capture.clone());
     let mut opening_requested = options.new_game && options.map == "gvillage";
     let resume = if let Some(slot) = options.load {

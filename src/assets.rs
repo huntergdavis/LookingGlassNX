@@ -10,6 +10,19 @@ use std::{
 use zip::ZipArchive;
 
 const MAX_ENTRY: u64 = 128 * 1024 * 1024;
+#[cfg(target_os = "horizon")]
+const HORIZON_ARCHIVE_TRACE_PACK_LIMIT: usize = 8;
+#[cfg(target_os = "horizon")]
+const HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT: usize = 8;
+
+fn horizon_archive_marker(stage: &str, ordinal: usize, scanned: usize, total: usize) {
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!(
+        "rust:assets:{stage}:pack={ordinal}:entries={scanned}/{total}"
+    ));
+    #[cfg(not(target_os = "horizon"))]
+    let _ = (stage, ordinal, scanned, total);
+}
 
 fn save_fingerprint_start() -> Option<Instant> {
     #[cfg(target_os = "horizon")]
@@ -242,6 +255,8 @@ impl Assets {
     }
 
     pub fn open(base: &Path) -> Result<Self> {
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:assets:archive-discovery-begin");
         let paths = fs::read_dir(base)
             .with_context(|| {
                 format!(
@@ -252,6 +267,8 @@ impl Assets {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("pk3")))
             .collect::<Vec<_>>();
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!("rust:assets:archive-discovery-ready:packs={}", paths.len()));
         Self::open_paths(base, paths)
     }
 
@@ -275,12 +292,26 @@ impl Assets {
         let mut entries = BTreeMap::new();
         let mut core_entries = BTreeMap::new();
         let mut packs = Vec::new();
-        for path in &paths {
+        for (pack_index, path) in paths.iter().enumerate() {
+            let ordinal = pack_index + 1;
+            #[cfg(target_os = "horizon")]
+            let trace_pack = cache_core_index && pack_index < HORIZON_ARCHIVE_TRACE_PACK_LIMIT;
+            #[cfg(not(target_os = "horizon"))]
+            let trace_pack = false;
+            if trace_pack {
+                horizon_archive_marker("pack-open-begin", ordinal, 0, 0);
+            }
             let mut pack = ZipArchive::new(File::open(&path)?)
                 .with_context(|| format!("Invalid PK3: {}", path.display()))?;
+            let entry_count = pack.len();
+            if trace_pack {
+                horizon_archive_marker("pack-open-ready", ordinal, entry_count, entry_count);
+            }
+            let progress_step = entry_count.saturating_add(HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT - 1)
+                / HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT;
             let p = packs.len();
             let is_core = !is_language_pack(path);
-            for i in 0..pack.len() {
+            for i in 0..entry_count {
                 let entry = pack.by_index(i)?;
                 if !entry.is_dir() {
                     let name = normalize(entry.name());
@@ -289,6 +320,15 @@ impl Assets {
                         core_entries.insert(name, (p, i));
                     }
                 }
+                let scanned = i + 1;
+                if trace_pack
+                    && (scanned % progress_step == 0 || scanned == entry_count)
+                {
+                    horizon_archive_marker("pack-index-progress", ordinal, scanned, entry_count);
+                }
+            }
+            if trace_pack {
+                horizon_archive_marker("pack-index-ready", ordinal, entry_count, entry_count);
             }
             packs.push(pack);
         }

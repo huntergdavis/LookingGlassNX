@@ -41,6 +41,7 @@ TARGET		:=	$(notdir $(CURDIR))
 APP_TITLE	:= Looking GlassNX title/menu spike
 APP_AUTHOR	:= Looking GlassNX contributors
 APP_VERSION	:= 0.1.0
+ICON		:= icon.jpg
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data

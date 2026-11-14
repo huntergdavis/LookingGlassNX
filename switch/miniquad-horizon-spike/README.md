@@ -46,8 +46,11 @@ still null. It requires a bounded printable-ASCII `OpenGL ES 3.*` version
 string and exits with code 13 otherwise; it does not guess a version. Failure
 to open or write the log does not change startup control flow. If no file is
 present, that can mean startup never reached `main` or diagnostic-file creation
-failed. No device run has yet verified that the log path is writable or that
-all events reach storage.
+failed. Hardware startup diagnostic 003 for the reviewed `18245ed` NRO confirms
+that the path was writable and markers through `rust:game-entry-entered` were
+stored on one launch. It ends there; later events and storage behavior are not
+verified. The exact diagnostic SHA256 is
+`5f1bd427264619d1cf0a5021b97bc7d9f12b37bcad4454db32dba5692443d116`.
 
 The first diagnostic run reached EGL setup and took the surface-size failure
 path with logged values `0x0` and error `EGL_SUCCESS`; that older combined
@@ -61,12 +64,15 @@ clear, or dimensions beyond the viewport limit are logged and fail startup.
 This follows the Switch reference's native-window dimension query. This source
 change has not yet been built or device-verified.
 
-The next diagnostic source adds fixed markers around Horizon callback pointer
-reconstruction, handler thread-local access, callback invocation, and the first
-Miniquad GL framebuffer/VAO/version calls. These markers narrow the interval
-reported by diagnostic run 002; a missing marker is not proof of the exact
-failure point because SD logging is best-effort. No new build or device result
-exists for this instrumentation.
+The current hardware diagnostic 003 ends at `rust:game-entry-entered`; it has
+no game-entry accepted/error marker. The source now has an unbuilt candidate
+that adds Horizon-only fixed boundaries after environment/arguments/CLI,
+around archive discovery/open/index, map enumeration, and viewer-window attach.
+Archive progress reports only capped ordinal and entry counts (first eight
+packs, at most eight progress records per pack) without paths or filenames. A
+missing marker only bounds the failure interval because SD logging is
+best-effort. This candidate has not been built or reviewed; do not use it to
+replace the installed NRO.
 
 The host also provides Rust `std`'s two observed `sysconf` queries because
 libnx/newlib does not link its `sysconf` implementation here: `_SC_PAGESIZE`
@@ -111,6 +117,15 @@ enabled, and this build rejects `wss://` co-op invites before opening a socket.
 
 The pure button/trigger mapper has two host-executed tests. They validate the
 libnx enum to RawPad conversion but do not validate physical controls on Switch.
-No NRO boot, game-data load, gameplay, pause/resume, or save/relaunch behavior
-has been verified on hardware. The accepted standalone EGL smoke source and
-artifact remain separate and unchanged.
+The reviewed `18245ed` NRO was installed and launched on Switch. Diagnostic
+003 records EGL setup, the native 1280x720 surface-size fallback, Miniquad
+startup, and `rust:game-entry-entered`, then stops. The owner reported a blank
+screen/crash. This does not establish that Rust `run()` returned, assets were
+mounted, the menu rendered on hardware, or input/gameplay worked. Separately,
+one Suyu emulator run showed a visible title/menu but sent no input; it is not
+hardware evidence. Pause/resume and save/relaunch also remain unverified. The
+accepted standalone EGL smoke source and artifact remain separate and unchanged.
+
+## NRO application icon
+
+The NRO uses the project's original AI-generated portal illustration as its application icon. The source image and derivative hashes are recorded in [`ICON_PROVENANCE.md`](ICON_PROVENANCE.md); `Makefile` pins the 256x256 JPEG with `ICON := icon.jpg`, which the devkitPro NRO rule passes to `--icon`. The source PNG is retained for provenance, not packed as game data or ROMFS. The icon has no third-party game characters or logos and is not an official game logo.

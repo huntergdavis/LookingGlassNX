@@ -311,12 +311,25 @@ fn preparse_coop_cli(args: &[String], horizon: bool) -> Result<Option<Result<()>
 
 fn run() -> Result<()> {
     #[cfg(target_os = "horizon")]
+    horizon_diag("rust:run-entered");
+    #[cfg(target_os = "horizon")]
     std::env::set_var(
         "LOOKING_GLASS_SETTINGS_DIR",
         "sdmc:/switch/alice-nx/profile",
     );
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:settings-dir-ready");
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:args-collection-begin");
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(result) = preparse_coop_cli(&args, cfg!(target_os = "horizon"))? {
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:args-collection-ready");
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:coop-preparse-begin");
+    let preparse = preparse_coop_cli(&args, cfg!(target_os = "horizon"))?;
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:coop-preparse-ready");
+    if let Some(result) = preparse {
         return result;
     }
     let mut o = Options {
@@ -343,6 +356,8 @@ fn run() -> Result<()> {
         story_preview: None,
         shelf_preview: false,
     };
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:option-parse-begin");
     let mut args = args.into_iter();
     let mut mode = "view";
     let mut registry = registry_check::Args::default();
@@ -732,12 +747,22 @@ fn run() -> Result<()> {
             },
         }
     }
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:option-parse-ready");
     if o.capture.is_some() && o.frames.is_none() {
         bail!("--capture requires --frames");
     }
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:assets-open-begin");
     let mut assets = match Assets::open(&o.data) {
-        Ok(assets) => assets,
+        Ok(assets) => {
+            #[cfg(target_os = "horizon")]
+            horizon_diag("rust:assets-open-ready");
+            assets
+        }
         Err(error) if cfg!(target_os = "horizon") => {
+            #[cfg(target_os = "horizon")]
+            horizon_diag("rust:assets-open-returned-error");
             let reason = error.to_string().chars().take(96).collect::<String>();
             let guidance = format!(
                 "{error:#}. Looking GlassNX needs the original 2011 PC Alice PK3 archives in one folder. Set LOOKING_GLASS_DATA_DIR to that folder; Xbox 360 Alice: Madness Returns files are not compatible and were left untouched."
@@ -778,7 +803,11 @@ fn run() -> Result<()> {
             });
             return Ok(());
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            #[cfg(target_os = "horizon")]
+            horizon_diag("rust:assets-open-returned-error");
+            return Err(error);
+        }
     };
     if mode == "campaign-playtest" {
         macroquad::Window::from_config(viewer::config(), async move {
@@ -1214,7 +1243,11 @@ fn run() -> Result<()> {
     if mode == "swim" {
         return water::check(&mut assets);
     }
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:maps-enumeration-begin");
     let maps = assets.maps();
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:maps-enumeration-ready");
     if mode == "save-preview" {
         macroquad::Window::from_config(viewer::config(), async move {
             if let Err(e) = save_preview::check(&mut assets).await {
@@ -1720,12 +1753,22 @@ fn run() -> Result<()> {
         println!("Map: {}\nFormat: FAKK 42\nArchives: {}\nVertices: {}\nSurfaces: {} (world: {})\nEntities: {}\nLightmaps: {}\nSpawn: {:?}",o.map,assets.pack_count(),map.vertices.len(),map.surfaces.len(),map.world_surfaces.len(),map.entities.len(),map.lightmaps.len()/49152,map.spawn());
         return Ok(());
     }
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:window-attach-begin");
     macroquad::Window::from_config(viewer::config(), async move {
+        #[cfg(target_os = "horizon")]
+        horizon_diag("rust:viewer-callback-entered");
         if let Err(e) = viewer::run(assets, o).await {
+            #[cfg(target_os = "horizon")]
+            horizon_diag("rust:viewer-run-returned-error");
             eprintln!("Viewer failed: {e:#}");
             std::process::exit(1);
         }
+        #[cfg(target_os = "horizon")]
+        horizon_diag("rust:viewer-run-returned-ok");
     });
+    #[cfg(target_os = "horizon")]
+    horizon_diag("rust:window-attach-returned");
     Ok(())
 }
 
