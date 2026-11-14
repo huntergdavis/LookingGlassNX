@@ -39,6 +39,8 @@ struct ArchiveIo<R> {
     trace: Option<ArchiveIoTrace>,
 }
 
+type Pk3Archive = ZipArchive<BufReader<ArchiveIo<File>>>;
+
 #[cfg(target_os = "horizon")]
 struct ArchiveIoTrace {
     ordinal: usize,
@@ -271,7 +273,7 @@ fn record_english_variant(
 /// mount is in use; save identities reuse the metadata and handles captured by
 /// this mount.
 pub struct Assets {
-    packs: Vec<ZipArchive<BufReader<File>>>,
+    packs: Vec<Pk3Archive>,
     paths: Vec<PathBuf>,
     entries: BTreeMap<String, (usize, usize)>,
     // Same alphabetical override rules as `entries`, with language packs
@@ -294,7 +296,7 @@ impl Assets {
         Self::fingerprint_entries(&mut self.packs, &self.entries, diagnostic)
     }
     fn fingerprint_entries(
-        packs: &mut [ZipArchive<BufReader<File>>],
+        packs: &mut [Pk3Archive],
         entries: &BTreeMap<String, (usize, usize)>,
         diagnostic: Option<(&str, &Instant)>,
     ) -> Result<String> {
@@ -327,7 +329,7 @@ impl Assets {
     }
 
     fn entries_for_pack(
-        pack: &mut ZipArchive<BufReader<File>>,
+        pack: &mut Pk3Archive,
         pack_index: usize,
     ) -> Result<BTreeMap<String, (usize, usize)>> {
         let mut entries = BTreeMap::new();
