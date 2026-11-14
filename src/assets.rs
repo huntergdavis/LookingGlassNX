@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -66,9 +67,73 @@ fn save_fingerprint_variant(index: usize) -> Option<&'static str> {
     }
 }
 
+fn archive_sort_key(path: &Path) -> OsString {
+    path.file_name().unwrap_or_default().to_ascii_lowercase()
+}
+
+fn stable_variant_ranks(
+    core_paths: &[(usize, PathBuf)],
+    english_path: &Path,
+    pack_count: usize,
+) -> (Vec<usize>, usize) {
+    let mut order = core_paths
+        .iter()
+        .map(|(index, path)| (Some(*index), path.clone()))
+        .collect::<Vec<_>>();
+    order.push((None, english_path.to_path_buf()));
+    order.sort_by_key(|(_, path)| archive_sort_key(path));
+
+    let mut core_rank = vec![usize::MAX; pack_count];
+    let mut english_rank = None;
+    for (rank, (pack_index, _)) in order.into_iter().enumerate() {
+        if let Some(pack_index) = pack_index {
+            core_rank[pack_index] = rank;
+        } else {
+            english_rank = Some(rank);
+        }
+    }
+    (
+        core_rank,
+        english_rank.expect("English path is appended to variant order"),
+    )
+}
+
+fn merge_variant_entries(
+    mut core_entries: BTreeMap<String, (usize, usize)>,
+    english_entries: BTreeMap<String, (usize, usize)>,
+    english_pack_index: usize,
+    core_rank: &[usize],
+    english_rank: usize,
+) -> BTreeMap<String, (usize, usize)> {
+    for (name, (_, index)) in english_entries {
+        let english_wins = match core_entries.get(&name) {
+            None => true,
+            Some(&(core_pack, _)) => english_rank > core_rank[core_pack],
+        };
+        if english_wins {
+            core_entries.insert(name, (english_pack_index, index));
+        }
+    }
+    core_entries
+}
+
+fn record_english_variant(
+    legacy: &mut Vec<String>,
+    bases: &mut Vec<Vec<PathBuf>>,
+    paths: Vec<PathBuf>,
+    fingerprint: Result<String>,
+) {
+    if let Ok(fingerprint) = fingerprint {
+        legacy.push(fingerprint);
+        // Keep successful bases even when the identity later deduplicates.
+        bases.push(paths);
+    }
+}
+
 /// Read-only PK3 mount. Later alphabetically sorted packs override earlier packs.
-/// Archive files must remain unchanged while this mount is in use; core
-/// save identity reuses the metadata captured by this mount.
+/// Archive paths, contents, and read permissions must remain stable while this
+/// mount is in use; save identities reuse the metadata and handles captured by
+/// this mount.
 pub struct Assets {
     packs: Vec<ZipArchive<File>>,
     paths: Vec<PathBuf>,
@@ -124,6 +189,58 @@ impl Assets {
         }
         Ok(format!("{:x}", hash.finalize()))
     }
+
+    fn entries_for_pack(
+        pack: &mut ZipArchive<File>,
+        pack_index: usize,
+    ) -> Result<BTreeMap<String, (usize, usize)>> {
+        let mut entries = BTreeMap::new();
+        for index in 0..pack.len() {
+            let entry = pack.by_index(index)?;
+            if !entry.is_dir() {
+                entries.insert(normalize(entry.name()), (pack_index, index));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn mounted_english_variant_entries(
+        &mut self,
+        english_pack_index: usize,
+    ) -> Result<BTreeMap<String, (usize, usize)>> {
+        let english_path = self
+            .paths
+            .get(english_pack_index)
+            .context("English PK3 is not in the active mount")?
+            .clone();
+
+        // Reproduce open_variant_paths' exact input order and stable sort. The
+        // English archive is appended after core paths, so it wins equal keys.
+        let core_paths = self
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(_, path)| !is_language_pack(path))
+            .map(|(index, path)| (index, path.clone()))
+            .collect::<Vec<_>>();
+        let (core_rank, english_rank) =
+            stable_variant_ranks(&core_paths, &english_path, self.paths.len());
+
+        let english_entries = Self::entries_for_pack(
+            self.packs
+                .get_mut(english_pack_index)
+                .context("English PK3 missing from active archive handles")?,
+            english_pack_index,
+        )?;
+        Ok(merge_variant_entries(
+            self.core_entries.clone(),
+            english_entries,
+            english_pack_index,
+            &core_rank,
+            english_rank,
+        ))
+    }
+
     pub fn open(base: &Path) -> Result<Self> {
         let paths = fs::read_dir(base)
             .with_context(|| {
@@ -151,7 +268,7 @@ impl Assets {
         mut paths: Vec<PathBuf>,
         cache_core_index: bool,
     ) -> Result<Self> {
-        paths.sort_by_key(|p| p.file_name().unwrap_or_default().to_ascii_lowercase());
+        paths.sort_by_key(|path| archive_sort_key(path));
         if paths.is_empty() {
             bail!("No PK3 archives found in {}", base.display());
         }
@@ -249,27 +366,54 @@ impl Assets {
                 save_fingerprint_variant_marker(stage, "open:begin", started.as_ref());
             }
             // Includes the previous save identity that kept English in the core.
-            if let Ok(mut mounted) = Self::open_variant_paths(&self.base, paths.clone()) {
-                if let Some(stage) = stage {
-                    save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
-                    save_fingerprint_variant_marker(stage, "fingerprint:begin", started.as_ref());
-                }
-                if let Ok(fingerprint) = mounted.fingerprint_with_progress(
-                    started
-                        .as_ref()
-                        .and_then(|started| stage.map(|stage| (stage, started))),
-                ) {
-                    if let Some(stage) = stage {
-                        save_fingerprint_variant_marker(
-                            stage,
-                            "fingerprint:ready",
-                            started.as_ref(),
-                        );
+            let mounted_pack = self.paths.iter().position(|path| path == english);
+            let fingerprint = if let Some(pack_index) = mounted_pack {
+                match self.mounted_english_variant_entries(pack_index) {
+                    Ok(entries) => {
+                        if let Some(stage) = stage {
+                            save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
+                            save_fingerprint_variant_marker(
+                                stage,
+                                "fingerprint:begin",
+                                started.as_ref(),
+                            );
+                        }
+                        Self::fingerprint_entries(
+                            &mut self.packs,
+                            &entries,
+                            started
+                                .as_ref()
+                                .and_then(|started| stage.map(|stage| (stage, started))),
+                        )
                     }
-                    legacy.push(fingerprint);
-                    bases.push(paths);
+                    Err(error) => Err(error),
+                }
+            } else {
+                match Self::open_variant_paths(&self.base, paths.clone()) {
+                    Ok(mut mounted) => {
+                        if let Some(stage) = stage {
+                            save_fingerprint_variant_marker(stage, "open:ready", started.as_ref());
+                            save_fingerprint_variant_marker(
+                                stage,
+                                "fingerprint:begin",
+                                started.as_ref(),
+                            );
+                        }
+                        mounted.fingerprint_with_progress(
+                            started
+                                .as_ref()
+                                .and_then(|started| stage.map(|stage| (stage, started))),
+                        )
+                    }
+                    Err(error) => Err(error),
+                }
+            };
+            if fingerprint.is_ok() {
+                if let Some(stage) = stage {
+                    save_fingerprint_variant_marker(stage, "fingerprint:ready", started.as_ref());
                 }
             }
+            record_english_variant(&mut legacy, &mut bases, paths, fingerprint);
         }
         save_fingerprint_marker("english-variants:ready", started.as_ref());
         save_fingerprint_marker("other-language-variants:begin", started.as_ref());
@@ -390,6 +534,248 @@ fn is_english_pack(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn write_pack(path: &Path, entries: &[(&str, &[u8])]) -> Result<()> {
+        let mut archive = zip::ZipWriter::new(File::create(path)?);
+        for (name, contents) in entries {
+            archive.start_file(*name, zip::write::FileOptions::default())?;
+            archive.write_all(contents)?;
+        }
+        archive.finish()?;
+        Ok(())
+    }
+
+    // Retained full-reopen oracle for the pre-optimization legacy algorithm.
+    fn reference_save_fingerprints(assets: &mut Assets) -> Result<(String, Vec<String>)> {
+        let core = assets
+            .paths
+            .iter()
+            .filter(|path| !is_language_pack(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if core.is_empty() {
+            bail!("No PK3 archives found in {}", assets.base.display());
+        }
+        let mut core_mount = Assets::open_variant_paths(&assets.base, core.clone())?;
+        let core_identity = core_mount.fingerprint()?;
+        let mut legacy = vec![assets.fingerprint()?];
+        let mut languages = assets
+            .paths
+            .iter()
+            .filter(|path| is_language_pack(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(managed) = assets.base.ancestors().find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("game-data"))
+        }) {
+            if let Ok(entries) = fs::read_dir(managed.join("languages")) {
+                languages.extend(
+                    entries
+                        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                        .filter(|path| is_language_pack(path)),
+                );
+            }
+        }
+
+        let mut bases = vec![core.clone()];
+        for english in languages.iter().filter(|path| is_english_pack(path)) {
+            let mut paths = core.clone();
+            paths.push(english.clone());
+            if let Ok(mut mounted) = Assets::open_variant_paths(&assets.base, paths.clone()) {
+                if let Ok(fingerprint) = mounted.fingerprint() {
+                    legacy.push(fingerprint);
+                    bases.push(paths);
+                }
+            }
+        }
+        for language in languages.iter().filter(|path| !is_english_pack(path)) {
+            for base in &bases {
+                let mut paths = base.clone();
+                paths.push(language.clone());
+                if let Ok(mut mounted) = Assets::open_variant_paths(&assets.base, paths) {
+                    if let Ok(fingerprint) = mounted.fingerprint() {
+                        legacy.push(fingerprint);
+                    }
+                }
+            }
+        }
+        legacy.sort();
+        legacy.dedup();
+        Ok((core_identity, legacy))
+    }
+
+    #[test]
+    fn english_variant_rank_preserves_stable_sort_ties_and_later_core() {
+        // Synthetic equal-key paths pin the helper's tie rule independently
+        // of is_language_pack's current filename classification.
+        let core_path = PathBuf::from("PAK4_ENGLISH.PK3");
+        let english_path = PathBuf::from("pak4_english.pk3");
+        let (ranks, english_rank) = stable_variant_ranks(&[(0, core_path)], &english_path, 2);
+        assert!(
+            english_rank > ranks[0],
+            "appended English wins an equal key"
+        );
+        let merged = merge_variant_entries(
+            BTreeMap::from([("ui/name".to_owned(), (0, 3))]),
+            BTreeMap::from([("ui/name".to_owned(), (1, 4))]),
+            1,
+            &ranks,
+            english_rank,
+        );
+        assert_eq!(merged["ui/name"], (1, 4));
+
+        let later_core = PathBuf::from("pak5_mod.pk3");
+        let (ranks, english_rank) = stable_variant_ranks(&[(0, later_core)], &english_path, 2);
+        assert!(ranks[0] > english_rank);
+        let merged = merge_variant_entries(
+            BTreeMap::from([("ui/name".to_owned(), (0, 3))]),
+            BTreeMap::from([("ui/name".to_owned(), (1, 4))]),
+            1,
+            &ranks,
+            english_rank,
+        );
+        assert_eq!(merged["ui/name"], (0, 3));
+    }
+
+    #[test]
+    fn mounted_english_reuse_matches_full_reopen_legacy_vector() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-english-reuse-{}",
+            std::process::id()
+        ));
+        let game_data = root.join("game-data");
+        let base = game_data.join("base");
+        let languages = game_data.join("languages");
+        fs::create_dir_all(&base)?;
+        fs::create_dir_all(&languages)?;
+        write_pack(
+            &base.join("pak0.pk3"),
+            &[
+                ("UI\\early.urc", b"core early"),
+                ("UI\\duplicate.urc", b"duplicate first"),
+                ("ui/duplicate.urc", b"duplicate last"),
+            ],
+        )?;
+        write_pack(
+            &base.join("pak4_english.pk3"),
+            &[
+                ("ui/early.urc", b"English override"),
+                ("ui/late.urc", b"English late"),
+                ("ui/german.urc", b"English German"),
+            ],
+        )?;
+        write_pack(
+            &base.join("pak4_german.pk3"),
+            &[("ui/german.urc", b"German active"), ("lang/german", b"de")],
+        )?;
+        write_pack(
+            &base.join("pak5_mod.pk3"),
+            &[("ui/late.urc", b"later core wins")],
+        )?;
+        // Same basename as the mounted English pack, but a different path;
+        // this one must stay on the old external-pack fallback.
+        write_pack(
+            &languages.join("pak4_english.pk3"),
+            &[("ui/external.urc", b"external English")],
+        )?;
+        write_pack(
+            &languages.join("pak4_french.pk3"),
+            &[("ui/external.urc", b"French"), ("lang/french", b"fr")],
+        )?;
+
+        let mut actual_assets = Assets::open(&base)?;
+        let names_before = actual_assets.names().map(str::to_owned).collect::<Vec<_>>();
+        let packs_before = actual_assets.pack_count();
+        assert_eq!(actual_assets.read("ui/early.urc")?, b"English override");
+        assert_eq!(actual_assets.read("ui/late.urc")?, b"later core wins");
+        assert_eq!(actual_assets.read("ui/german.urc")?, b"German active");
+        assert_eq!(actual_assets.read("ui/duplicate.urc")?, b"duplicate last");
+
+        let actual = actual_assets.save_fingerprints()?;
+        let names_after = actual_assets.names().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(names_after, names_before);
+        assert_eq!(actual_assets.pack_count(), packs_before);
+        assert_eq!(actual_assets.read("ui/early.urc")?, b"English override");
+        assert_eq!(actual_assets.read("ui/late.urc")?, b"later core wins");
+        assert_eq!(actual_assets.read("ui/german.urc")?, b"German active");
+        assert_eq!(actual_assets.read("ui/duplicate.urc")?, b"duplicate last");
+
+        let mut reference_assets = Assets::open(&base)?;
+        let reference = reference_save_fingerprints(&mut reference_assets)?;
+        assert_eq!(
+            actual, reference,
+            "all legacy identities match the full-reopen oracle"
+        );
+
+        drop(actual_assets);
+        drop(reference_assets);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_english_variant_is_skipped_without_adding_a_base() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-english-failure-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        let pack_path = root.join("pak0.pk3");
+        write_pack(&pack_path, &[("ui/name", b"core")])?;
+        let mut mounted = Assets::open(&root)?;
+        let invalid = BTreeMap::from([("ui/name".to_owned(), (0, usize::MAX))]);
+        let failed = Assets::fingerprint_entries(&mut mounted.packs, &invalid, None);
+        assert!(
+            failed.is_err(),
+            "invalid entry index injects fingerprint failure"
+        );
+
+        let mut legacy = vec!["mounted".to_owned()];
+        let mut bases = vec![vec![pack_path.clone()]];
+        record_english_variant(
+            &mut legacy,
+            &mut bases,
+            vec![pack_path.clone(), root.join("pak4_english.pk3")],
+            failed,
+        );
+        assert_eq!(legacy, vec!["mounted".to_owned()]);
+        assert_eq!(bases, vec![vec![pack_path.clone()]]);
+        drop(mounted);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_external_english_variant_keeps_skip_behavior() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "looking-glass-english-open-error-{}",
+            std::process::id()
+        ));
+        let game_data = root.join("game-data");
+        let base = game_data.join("base");
+        let languages = game_data.join("languages");
+        fs::create_dir_all(&base)?;
+        fs::create_dir_all(&languages)?;
+        write_pack(&base.join("pak0.pk3"), &[("ui/core", b"core")])?;
+        fs::write(languages.join("pak4_english.pk3"), b"not a zip archive")?;
+
+        let mut actual_assets = Assets::open(&base)?;
+        let actual = actual_assets.save_fingerprints()?;
+        let mut reference_assets = Assets::open(&base)?;
+        let reference = reference_save_fingerprints(&mut reference_assets)?;
+        assert_eq!(
+            actual, reference,
+            "unreadable external English pack is skipped"
+        );
+
+        drop(actual_assets);
+        drop(reference_assets);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
     #[test]
     fn language_switch_preserves_save_identity_and_alphabetical_precedence() -> Result<()> {
         let root =
