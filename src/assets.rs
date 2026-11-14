@@ -299,8 +299,33 @@ impl Assets {
             if trace_pack {
                 horizon_archive_marker("pack-open-begin", ordinal, 0, 0);
             }
-            let mut pack = ZipArchive::new(File::open(&path)?)
-                .with_context(|| format!("Invalid PK3: {}", path.display()))?;
+            let archive_file = match File::open(&path) {
+                Ok(file) => {
+                    #[cfg(target_os = "horizon")]
+                    if trace_pack {
+                        horizon_archive_marker("pack-file-open-ready", ordinal, 0, 0);
+                        horizon_archive_marker("pack-zip-parse-begin", ordinal, 0, 0);
+                    }
+                    file
+                }
+                Err(error) => {
+                    #[cfg(target_os = "horizon")]
+                    if trace_pack {
+                        horizon_archive_marker("pack-file-open-error", ordinal, 0, 0);
+                    }
+                    return Err(error.into());
+                }
+            };
+            let mut pack = match ZipArchive::new(archive_file) {
+                Ok(pack) => pack,
+                Err(error) => {
+                    #[cfg(target_os = "horizon")]
+                    if trace_pack {
+                        horizon_archive_marker("pack-zip-parse-error", ordinal, 0, 0);
+                    }
+                    return Err(error).with_context(|| format!("Invalid PK3: {}", path.display()));
+                }
+            };
             let entry_count = pack.len();
             #[cfg(target_os = "horizon")]
             if trace_pack {
