@@ -1429,13 +1429,14 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
             && !menu
             && !inventory_menu
             && !console_input
-            && (is_mouse_button_pressed(MouseButton::Left) || input.pad_pressed("A"))
+            && (input.pad_pressed("A") || {
+                let (mx, my) = mouse_position();
+                is_mouse_button_pressed(MouseButton::Left)
+                    && mx >= 0. && my >= 0. && mx < screen_width() && my < screen_height()
+            })
         {
-            let (mx, my) = mouse_position();
-            if mx >= 0. && my >= 0. && mx < screen_width() && my < screen_height() {
-                paused = false;
-                clock.pause();
-            }
+            paused = false;
+            clock.pause();
         }
         mouse_look.sensitivity = preferences.sensitivity;
         mouse_look.inverted = preferences.invert_mouse;
