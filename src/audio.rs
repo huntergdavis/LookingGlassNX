@@ -581,6 +581,7 @@ struct Playback {
 struct HorizonAudio {
     stop: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
     reported: bool,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -594,13 +595,21 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "horizon")]
-struct HorizonAudioSession(Arc<AtomicBool>);
+static HORIZON_AUDIO_RESERVED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "horizon")]
+struct HorizonAudioSession {
+    failed: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
+}
 
 #[cfg(target_os = "horizon")]
 impl Drop for HorizonAudioSession {
     fn drop(&mut self) {
         if unsafe { lg_audio_shutdown() } != 0 {
-            self.0.store(true, Ordering::Release);
+            self.failed.store(true, Ordering::Release);
+        } else {
+            self.closed.store(true, Ordering::Release);
         }
     }
 }
@@ -608,28 +617,37 @@ impl Drop for HorizonAudioSession {
 #[cfg(target_os = "horizon")]
 impl HorizonAudio {
     fn open(source: dynamic_mixer::DynamicMixer<f32>, data: Arc<MonitorData>, record: bool) -> Result<Self> {
+        HORIZON_AUDIO_RESERVED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| anyhow!("Horizon audio worker is already active or retained"))?;
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker_failed = failed.clone();
+        let worker_closed = closed.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let worker = std::thread::Builder::new()
+        let worker = match std::thread::Builder::new()
             .name("lookingglass-audio".into())
             .spawn(move || {
                 // audout, its static descriptors, and the resampler all belong
                 // to this worker for their full lifetime.
+                let mut ready_tx = Some(ready_tx);
                 if unsafe { lg_audio_init() } != 0 {
                     worker_failed.store(true, Ordering::Release);
-                    let _ = ready_tx.send(false);
+                    if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(false); }
                     return;
                 }
-                let _session = HorizonAudioSession(worker_failed.clone());
-                let _ = ready_tx.send(true);
+                let _session = HorizonAudioSession {
+                    failed: worker_failed.clone(),
+                    closed: worker_closed,
+                };
                 let mut monitor = Monitor { source, data, block: Vec::with_capacity(1024), record };
                 let mut previous = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
                 let mut current = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
                 let mut phase = 0.0f32;
                 let mut failed_output = false;
+                let mut submitted = 0usize;
                 while !worker_stop.load(Ordering::Acquire) {
                     let free = unsafe { lg_audio_free_buffers() };
                     if free < 0 {
@@ -655,14 +673,28 @@ impl HorizonAudio {
                             failed_output = true;
                             break;
                         }
+                        submitted += 1;
+                        if submitted == 3 {
+                            if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(true); }
+                        }
                     }
                     if failed_output { break; }
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 if failed_output { worker_failed.store(true, Ordering::Release); }
-            })?;
+                if let Some(ready_tx) = ready_tx.take() {
+                    worker_failed.store(true, Ordering::Release);
+                    let _ = ready_tx.send(false);
+                }
+            }) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    HORIZON_AUDIO_RESERVED.store(false, Ordering::Release);
+                    return Err(error.into());
+                }
+            };
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(true) => Ok(Self { stop, failed, reported: false, worker: Some(worker) }),
+            Ok(true) => Ok(Self { stop, failed, closed, reported: false, worker: Some(worker) }),
             Ok(false) => {
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
@@ -688,6 +720,7 @@ impl HorizonAudio {
             if let Some(worker) = self.worker.take() {
                 let _ = worker.join();
             }
+            self.release_reservation_if_closed();
         }
         if self.failed.load(Ordering::Acquire) && !self.reported {
             self.reported = true;
@@ -700,9 +733,9 @@ impl HorizonAudio {
     fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            // Do not let a broken Horizon service call hang game shutdown.
-            // A timed-out handle is detached; its static C++ slots remain
-            // allocated and g_audio_ready prevents in-process reuse.
+            // A broken Horizon service call must not block this drop forever.
+            // After 50 short polls, detach; the process-wide reservation and
+            // static C++ slots prevent another worker from reusing them.
             for _ in 0..50 {
                 if worker.is_finished() { break; }
                 std::thread::sleep(Duration::from_millis(5));
@@ -712,6 +745,13 @@ impl HorizonAudio {
             } else {
                 self.failed.store(true, Ordering::Release);
             }
+        }
+        self.release_reservation_if_closed();
+    }
+
+    fn release_reservation_if_closed(&self) {
+        if self.worker.is_none() && self.closed.load(Ordering::Acquire) {
+            HORIZON_AUDIO_RESERVED.store(false, Ordering::Release);
         }
     }
 }

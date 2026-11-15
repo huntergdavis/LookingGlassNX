@@ -69,10 +69,12 @@ Horizon audio now has a source-only libnx `audout` path. It keeps the existing
 worker to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
 through eight 0x1000-aligned buffers (80 ms total queue capacity). A
 dedicated Rust worker owns audout and polls released buffers every 5 ms, so
-render-thread stalls do not stop audio production. It starts with an audout
-initialization handshake with a 2 second limit. Playback drop requests stop
-and waits up to 250 ms for worker exit; a stuck worker is detached while its
-static audout slots remain allocated and unavailable for reuse.
+render-thread stalls do not stop audio production. Startup reports ready only
+after three blocks are submitted and audout starts, with a 2 second channel
+timeout. Playback drop requests stop and polls for 50 short intervals before detaching a stuck
+worker; scheduler delays can extend the elapsed time. A process-wide atomic
+reservation is acquired before thread creation and kept after init/shutdown
+uncertainty, so a detached worker's static audout slots cannot be reused.
 Shutdown stops and flushes audout, checks that every descriptor has returned,
 and leaves the service and static storage intact if ownership cannot be
 confirmed. Scheduling delays longer than the bounded queue can still cause a

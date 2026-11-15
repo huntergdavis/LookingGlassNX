@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <switch/services/csrng.h>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <limits>
@@ -97,13 +98,16 @@ static struct AudioSlot {
 static bool g_audio_ready = false;
 static bool g_audio_started = false;
 static unsigned int g_audio_queued = 0;
+static std::atomic<bool> g_audio_reserved{false};
 
 extern "C" int32_t lg_audio_init() {
-    if (g_audio_ready) return -1;
+    bool expected = false;
+    if (!g_audio_reserved.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return -1;
     if (R_FAILED(audoutInitialize())) return -1;
     if (audoutGetSampleRate() != 48000 || audoutGetChannelCount() != 2 ||
         audoutGetPcmFormat() != PcmFormat_Int16) {
         audoutExit();
+        g_audio_reserved.store(false, std::memory_order_release);
         return -1;
     }
     for (auto& slot : g_audio) {
@@ -174,6 +178,7 @@ extern "C" int32_t lg_audio_shutdown() {
     g_audio_queued = 0;
     g_audio_ready = false;
     for (auto& slot : g_audio) slot.free = true;
+    g_audio_reserved.store(false, std::memory_order_release);
     return 0;
 }
 
