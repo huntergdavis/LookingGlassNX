@@ -28,6 +28,13 @@ pub use water_check::check as check_water;
 mod camera_portal;
 pub use billboard_check::check as check_billboards;
 
+macro_rules! horizon_scene_diag {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!($($arg)*));
+    }}
+}
+
 pub(crate) const BLEND_COUNT: usize = 109;
 
 const VERTEX: &str = r#"#version 100
@@ -1059,19 +1066,35 @@ impl Scene {
         name: &str,
         difficulty: crate::powerups::Difficulty,
     ) -> Result<Self> {
-        let mut map = Bsp::parse(&assets.read(&format!("maps/{name}.bsp"))?)
-            .with_context(|| format!("Loading {name}"))?;
+        horizon_scene_diag!("rust:scene-load:{name}:archive-read-begin");
+        let bsp = assets.read(&format!("maps/{name}.bsp"))?;
+        horizon_scene_diag!(
+            "rust:scene-load:{name}:archive-read-ready:bytes={}",
+            bsp.len()
+        );
+        horizon_scene_diag!("rust:scene-load:{name}:bsp-parse-begin");
+        let mut map = Bsp::parse(&bsp).with_context(|| format!("Loading {name}"))?;
+        horizon_scene_diag!("rust:scene-load:{name}:bsp-parse-ready");
         map.difficulty = difficulty;
+        horizon_scene_diag!("rust:scene-load:{name}:collision-world-begin");
         let world = World::from_bsp(&map)?;
+        horizon_scene_diag!("rust:scene-load:{name}:collision-world-ready");
+        horizon_scene_diag!("rust:scene-load:{name}:scene-build-begin");
         Self::from_parts(assets, name, map, world)
     }
     /// The window half of loading a scene, for a map and collision that `campaign::load_visit`
     /// already built (with the difficulty applied) so that the viewer and a headless route share
     /// one copy of them.
     pub fn from_parts(assets: &mut Assets, name: &str, map: Bsp, world: World) -> Result<Self> {
+        horizon_scene_diag!("rust:scene-load:{name}:lighting-begin");
         crate::lighting::load_art(assets)?;
+        horizon_scene_diag!("rust:scene-load:{name}:lighting-ready");
+        horizon_scene_diag!("rust:scene-load:{name}:materials-begin");
         let specs = texture::read_materials(assets)?;
+        horizon_scene_diag!("rust:scene-load:{name}:materials-ready");
+        horizon_scene_diag!("rust:scene-load:{name}:atmosphere-begin");
         let atmosphere = Atmosphere::load(assets, name, &map, &specs)?;
+        horizon_scene_diag!("rust:scene-load:{name}:atmosphere-ready");
         let count = map.lightmaps.len() / 49152;
         let cols = 8usize;
         let rows = count.div_ceil(cols).max(1);
@@ -1088,6 +1111,9 @@ impl Scene {
         }
         let atlas = Texture2D::from_rgba8((cols * 128) as u16, (rows * 128) as u16, &atlas);
         atlas.set_filter(FilterMode::Linear);
+        horizon_scene_diag!(
+            "rust:scene-load:{name}:lightmap-atlas-ready:count={count}:rows={rows}"
+        );
         let fallback = Texture2D::from_rgba8(
             2,
             2,
@@ -1128,7 +1154,10 @@ impl Scene {
         let mut cache = BTreeMap::<String, Texture2D>::new();
         let mut missing = Vec::new();
         let mut batches = Vec::<Batch>::new();
+        horizon_scene_diag!("rust:scene-load:{name}:surface-batches-begin");
+        horizon_scene_diag!("rust:scene-load:{name}:camera-portals-begin");
         let camera_portals = camera_portal::load(assets, name, &map, &world, &specs)?;
+        horizon_scene_diag!("rust:scene-load:{name}:camera-portals-ready");
         let mut groups = BTreeMap::<(usize, usize), usize>::new();
         let sky_origin = crate::sky::origin(assets, name, &map)?;
         let mut sky_motions = crate::sky_sequence::motions(assets, &map, name)?;
@@ -1310,7 +1339,12 @@ impl Scene {
         }
         let mut sky_props = Vec::new();
         let decoration_start = batches.len();
+        horizon_scene_diag!("rust:scene-load:{name}:decorations-begin");
         let decorations = crate::decorations::Catalog::load(assets, &map, name)?;
+        horizon_scene_diag!(
+            "rust:scene-load:{name}:decorations-ready:placements={}",
+            decorations.placements.len()
+        );
         println!("Decorations {name}: {} placements, {} baked duplicates avoided, {} scripted props deferred", decorations.placements.len(), decorations.baked, decorations.deferred.len());
         for placement in &decorations.placements {
             let def = &placement.model.def;
@@ -1479,6 +1513,7 @@ impl Scene {
             }
         }
         println!("Loaded {name}: {triangles} triangles, {} batches, {animated} animated batches, {} fog volumes, distance fog {}, {} fallback images",batches.len(),atmosphere.volumes.len(),atmosphere.distance.w,missing.len());
+        horizon_scene_diag!("rust:scene-load:{name}:scene-build-ready:batches={}", batches.len());
         Ok(Self {
             camera_portals,
             rope_shapes,
