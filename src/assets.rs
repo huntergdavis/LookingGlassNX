@@ -55,6 +55,12 @@ struct ArchiveIo<R> {
 
 type Pk3Archive = ZipArchive<BufReader<ArchiveIo<File>>>;
 
+#[derive(Clone, Copy)]
+struct FingerprintMetadata {
+    size: u64,
+    crc32: u32,
+}
+
 #[cfg(target_os = "horizon")]
 struct ArchiveIoTrace {
     ordinal: usize,
@@ -329,6 +335,10 @@ fn record_english_variant(
 /// this mount.
 pub struct Assets {
     packs: Vec<Pk3Archive>,
+    // Captured during the same by_index pass that builds `entries`. Save
+    // fingerprints can reuse central-directory metadata without re-reading
+    // every ZIP local header; indices remain aligned with `packs`.
+    fingerprint_metadata: Vec<Vec<FingerprintMetadata>>,
     paths: Vec<PathBuf>,
     entries: BTreeMap<String, (usize, usize)>,
     // Same alphabetical override rules as `entries`, with language packs
@@ -348,10 +358,10 @@ impl Assets {
         &mut self,
         diagnostic: Option<(&str, &Instant)>,
     ) -> Result<String> {
-        Self::fingerprint_entries(&mut self.packs, &self.entries, diagnostic)
+        Self::fingerprint_entries(&self.fingerprint_metadata, &self.entries, diagnostic)
     }
     fn fingerprint_entries(
-        packs: &mut [Pk3Archive],
+        metadata: &[Vec<FingerprintMetadata>],
         entries: &BTreeMap<String, (usize, usize)>,
         diagnostic: Option<(&str, &Instant)>,
     ) -> Result<String> {
@@ -361,11 +371,14 @@ impl Assets {
         let mut hash = Sha256::new();
         let mut next_progress = 0;
         for (index_in_map, (name, &(pack, index))) in entries.iter().enumerate() {
-            let entry = packs[pack].by_index(index)?;
+            let entry = metadata
+                .get(pack)
+                .and_then(|entries| entries.get(index))
+                .context("ZIP fingerprint metadata missing for indexed entry")?;
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name.as_bytes());
-            hash.update(entry.size().to_le_bytes());
-            hash.update(entry.crc32().to_le_bytes());
+            hash.update(entry.size.to_le_bytes());
+            hash.update(entry.crc32.to_le_bytes());
             let processed = index_in_map + 1;
             if let Some((stage, started)) = diagnostic {
                 if next_progress < PROGRESS_ENTRIES.len()
@@ -507,6 +520,7 @@ impl Assets {
         let mut entries = BTreeMap::new();
         let mut core_entries = BTreeMap::new();
         let mut packs = Vec::new();
+        let mut fingerprint_metadata = Vec::with_capacity(paths.len());
         for path in &paths {
             #[cfg(target_os = "horizon")]
             let ordinal = packs.len() + 1;
@@ -565,8 +579,13 @@ impl Assets {
                 / HORIZON_ARCHIVE_TRACE_PROGRESS_LIMIT;
             let p = packs.len();
             let is_core = !is_language_pack(path);
+            let mut pack_metadata = Vec::with_capacity(entry_count);
             for i in 0..entry_count {
                 let entry = pack.by_index(i)?;
+                pack_metadata.push(FingerprintMetadata {
+                    size: entry.size(),
+                    crc32: entry.crc32(),
+                });
                 if !entry.is_dir() {
                     let name = normalize(entry.name());
                     entries.insert(name.clone(), (p, i));
@@ -601,9 +620,11 @@ impl Assets {
                 );
             }
             packs.push(pack);
+            fingerprint_metadata.push(pack_metadata);
         }
         Ok(Self {
             packs,
+            fingerprint_metadata,
             paths,
             entries,
             core_entries,
@@ -628,7 +649,7 @@ impl Assets {
         }
         save_fingerprint_marker("core-fingerprint:begin", started.as_ref());
         let identity = Self::fingerprint_entries(
-            &mut self.packs,
+            &self.fingerprint_metadata,
             &self.core_entries,
             started.as_ref().map(|started| ("core", started)),
         )?;
@@ -689,7 +710,7 @@ impl Assets {
                             );
                         }
                         Self::fingerprint_entries(
-                            &mut self.packs,
+                            &self.fingerprint_metadata,
                             &entries,
                             started
                                 .as_ref()
@@ -1372,7 +1393,8 @@ mod tests {
         write_pack(&pack_path, &[("ui/name", b"core")])?;
         let mut mounted = Assets::open(&root)?;
         let invalid = BTreeMap::from([("ui/name".to_owned(), (0, usize::MAX))]);
-        let failed = Assets::fingerprint_entries(&mut mounted.packs, &invalid, None);
+        let failed =
+            Assets::fingerprint_entries(&mounted.fingerprint_metadata, &invalid, None);
         assert!(
             failed.is_err(),
             "invalid entry index injects fingerprint failure"
