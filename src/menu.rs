@@ -1886,7 +1886,9 @@ impl Menu {
                 crate::ui_probe::screen(&format!("menu-{page:?}"), &buttons.iter()
                     .map(|b| (format!("{:?}", b.click), b.rect)).collect::<Vec<_>>(), &self.message);
             }
-            if focused {
+            // Horizon currently has no mouse input; its synthetic (0, 0)
+            // position should not draw a pointer over controller menus.
+            if focused && !cfg!(target_os = "horizon") {
                 self.ui.cursor();
             }
             if focused && is_key_pressed(KeyCode::F12) {
