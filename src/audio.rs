@@ -583,6 +583,7 @@ struct HorizonAudio {
     failed: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
     reported: bool,
+    joined: bool,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -694,7 +695,7 @@ impl HorizonAudio {
                 }
             };
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(true) => Ok(Self { stop, failed, closed, reported: false, worker: Some(worker) }),
+            Ok(true) => Ok(Self { stop, failed, closed, reported: false, joined: false, worker: Some(worker) }),
             Ok(false) => {
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
@@ -718,7 +719,7 @@ impl HorizonAudio {
         if exited_early {
             self.failed.store(true, Ordering::Release);
             if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
+                if worker.join().is_ok() { self.joined = true; }
             }
             self.release_reservation_if_closed();
         }
@@ -741,7 +742,11 @@ impl HorizonAudio {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if worker.is_finished() {
-                if worker.join().is_err() { self.failed.store(true, Ordering::Release); }
+                if worker.join().is_ok() {
+                    self.joined = true;
+                } else {
+                    self.failed.store(true, Ordering::Release);
+                }
             } else {
                 self.failed.store(true, Ordering::Release);
             }
@@ -750,7 +755,7 @@ impl HorizonAudio {
     }
 
     fn release_reservation_if_closed(&self) {
-        if self.worker.is_none() && self.closed.load(Ordering::Acquire) {
+        if self.joined && self.closed.load(Ordering::Acquire) {
             HORIZON_AUDIO_RESERVED.store(false, Ordering::Release);
         }
     }

@@ -73,8 +73,10 @@ render-thread stalls do not stop audio production. Startup reports ready only
 after three blocks are submitted and audout starts, with a 2 second channel
 timeout. Playback drop requests stop and polls for 50 short intervals before detaching a stuck
 worker; scheduler delays can extend the elapsed time. A process-wide atomic
-reservation is acquired before thread creation and kept after init/shutdown
-uncertainty, so a detached worker's static audout slots cannot be reused.
+reservation is acquired before thread creation and released only after a
+successful join and confirmed audout shutdown. It remains held after init
+failure, timeout, panic, or detach for the rest of the process, so no later
+worker can reuse a possibly live service or static slot.
 Shutdown stops and flushes audout, checks that every descriptor has returned,
 and leaves the service and static storage intact if ownership cannot be
 confirmed. Scheduling delays longer than the bounded queue can still cause a
