@@ -332,11 +332,13 @@ fn record_english_variant(
 /// Read-only PK3 mount. Later alphabetically sorted packs override earlier packs.
 /// Archive paths, contents, and read permissions must remain stable while this
 /// mount is in use; save identities reuse the metadata and handles captured by
-/// this mount.
+/// this mount. Fingerprints use size/CRC metadata captured while opening the
+/// mount and do not revalidate ZIP local headers on later fingerprint calls.
+/// Reopen the archives to observe changes made externally after mounting.
 pub struct Assets {
     packs: Vec<Pk3Archive>,
-    // Captured during the same by_index pass that builds `entries`. Save
-    // fingerprints can reuse central-directory metadata without re-reading
+    // Snapshot captured during the same by_index pass that builds `entries`.
+    // Later fingerprints reuse central-directory metadata without re-reading
     // every ZIP local header; indices remain aligned with `packs`.
     fingerprint_metadata: Vec<Vec<FingerprintMetadata>>,
     paths: Vec<PathBuf>,
@@ -1120,8 +1122,12 @@ mod tests {
     fn write_pack(path: &Path, entries: &[(&str, &[u8])]) -> Result<()> {
         let mut archive = zip::ZipWriter::new(File::create(path)?);
         for (name, contents) in entries {
-            archive.start_file(*name, zip::write::FileOptions::default())?;
-            archive.write_all(contents)?;
+            if name.ends_with('/') {
+                archive.add_directory(*name, zip::write::FileOptions::default())?;
+            } else {
+                archive.start_file(*name, zip::write::FileOptions::default())?;
+                archive.write_all(contents)?;
+            }
         }
         archive.finish()?;
         Ok(())
@@ -1140,7 +1146,29 @@ mod tests {
         Ok(root)
     }
 
-    // Retained full-reopen oracle for the pre-optimization legacy algorithm.
+    // Retained pre-cache oracle: hashes metadata through the previous
+    // ZipArchive::by_index path, independently of fingerprint_metadata.
+    fn reference_fingerprint(assets: &mut Assets) -> Result<String> {
+        reference_fingerprint_entries(&mut assets.packs, &assets.entries)
+    }
+
+    fn reference_fingerprint_entries(
+        packs: &mut [Pk3Archive],
+        entries: &BTreeMap<String, (usize, usize)>,
+    ) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        for (name, &(pack, index)) in entries {
+            let entry = packs[pack].by_index(index)?;
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+            hash.update(entry.size().to_le_bytes());
+            hash.update(entry.crc32().to_le_bytes());
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+
+    // Full-reopen legacy-vector oracle using the independent by_index hash.
     fn reference_save_fingerprints(assets: &mut Assets) -> Result<(String, Vec<String>)> {
         let core = assets
             .paths
@@ -1152,8 +1180,8 @@ mod tests {
             bail!("No PK3 archives found in {}", assets.base.display());
         }
         let mut core_mount = Assets::open_variant_paths(&assets.base, core.clone())?;
-        let core_identity = core_mount.fingerprint()?;
-        let mut legacy = vec![assets.fingerprint()?];
+        let core_identity = reference_fingerprint(&mut core_mount)?;
+        let mut legacy = vec![reference_fingerprint(assets)?];
         let mut languages = assets
             .paths
             .iter()
@@ -1179,7 +1207,7 @@ mod tests {
             let mut paths = core.clone();
             paths.push(english.clone());
             if let Ok(mut mounted) = Assets::open_variant_paths(&assets.base, paths.clone()) {
-                if let Ok(fingerprint) = mounted.fingerprint() {
+                if let Ok(fingerprint) = reference_fingerprint(&mut mounted) {
                     legacy.push(fingerprint);
                     bases.push(paths);
                 }
@@ -1190,7 +1218,7 @@ mod tests {
                 let mut paths = base.clone();
                 paths.push(language.clone());
                 if let Ok(mut mounted) = Assets::open_variant_paths(&assets.base, paths) {
-                    if let Ok(fingerprint) = mounted.fingerprint() {
+                    if let Ok(fingerprint) = reference_fingerprint(&mut mounted) {
                         legacy.push(fingerprint);
                     }
                 }
@@ -1235,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn mounted_english_reuse_matches_full_reopen_legacy_vector() -> Result<()> {
+    fn mounted_english_cache_matches_pre_cache_legacy_vector() -> Result<()> {
         let root = fixture_root("english-reuse")?;
         let game_data = root.join("game-data");
         let base = game_data.join("base");
@@ -1245,6 +1273,7 @@ mod tests {
         write_pack(
             &base.join("pak0.pk3"),
             &[
+                ("ui/", b""),
                 ("UI\\early.urc", b"core early"),
                 ("UI\\duplicate.urc", b"duplicate first"),
                 ("ui/duplicate.urc", b"duplicate last"),
@@ -1253,6 +1282,7 @@ mod tests {
         write_pack(
             &base.join("pak4_english.pk3"),
             &[
+                ("ui/", b""),
                 ("ui/early.urc", b"English override"),
                 ("ui/late.urc", b"English late"),
                 ("ui/german.urc", b"English German"),
@@ -1262,7 +1292,11 @@ mod tests {
         )?;
         write_pack(
             &base.join("pak4_german.pk3"),
-            &[("ui/german.urc", b"German active"), ("lang/german", b"de")],
+            &[
+                ("lang/", b""),
+                ("ui/german.urc", b"German active"),
+                ("lang/german", b"de"),
+            ],
         )?;
         write_pack(
             &base.join("pak5_mod.pk3"),
@@ -1313,7 +1347,7 @@ mod tests {
         let reference = reference_save_fingerprints(&mut reference_assets)?;
         assert_eq!(
             actual, reference,
-            "all legacy identities match the full-reopen oracle"
+            "all legacy identities match the independent pre-cache by_index oracle"
         );
 
         drop(actual_assets);
@@ -1393,11 +1427,14 @@ mod tests {
         write_pack(&pack_path, &[("ui/name", b"core")])?;
         let mut mounted = Assets::open(&root)?;
         let invalid = BTreeMap::from([("ui/name".to_owned(), (0, usize::MAX))]);
-        let failed =
-            Assets::fingerprint_entries(&mounted.fingerprint_metadata, &invalid, None);
+        let failed = Assets::fingerprint_entries(&mounted.fingerprint_metadata, &invalid, None);
         assert!(
             failed.is_err(),
             "invalid entry index injects fingerprint failure"
+        );
+        assert!(
+            reference_fingerprint_entries(&mut mounted.packs, &invalid).is_err(),
+            "pre-cache by_index path also rejects invalid indices"
         );
 
         let mut legacy = vec!["mounted".to_owned()];
