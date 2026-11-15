@@ -64,6 +64,15 @@ clear, or dimensions beyond the viewport limit are logged and fail startup.
 This follows the Switch reference's native-window dimension query. This source
 change has not yet been built or device-verified.
 
+Horizon audio now has a source-only libnx `audout` path. It keeps the existing
+44.1 kHz stereo mixer and capture monitor, linearly resamples on the applet
+thread to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
+through four 0x1000-aligned buffers. The queue is primed before playback and
+released buffers are polled once per frame; no audio worker thread is created.
+This implementation has not been built or verified on the Switch. Physical
+audio output, underrun behavior, and shutdown with queued buffers remain open
+device checks.
+
 The current hardware diagnostic 003 ends at `rust:game-entry-entered`; it has
 no game-entry accepted/error marker. The source now has an unbuilt candidate
 that adds Horizon-only fixed boundaries after environment/arguments/CLI,

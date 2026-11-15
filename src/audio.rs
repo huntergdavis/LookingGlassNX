@@ -5,9 +5,11 @@ mod reaction;
 pub mod regression;
 pub mod world;
 use crate::{assets::Assets, bsp::Bsp, collision::World};
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use macroquad::prelude::{vec3, Vec3};
-use rodio::{dynamic_mixer, Decoder, OutputStream, Sink, Source};
+use rodio::{dynamic_mixer, Decoder, Sink, Source};
+#[cfg(not(target_os = "horizon"))]
+use rodio::OutputStream;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Cursor,
@@ -564,10 +566,82 @@ impl<S> Drop for Monitor<S> {
         self.flush();
     }
 }
+#[cfg(not(target_os = "horizon"))]
 struct Playback {
     _stream: OutputStream,
     mixer: Arc<dynamic_mixer::DynamicMixerController<f32>>,
 }
+#[cfg(target_os = "horizon")]
+struct Playback {
+    _audio: HorizonAudio,
+    mixer: Arc<dynamic_mixer::DynamicMixerController<f32>>,
+}
+
+#[cfg(target_os = "horizon")]
+struct HorizonAudio {
+    monitor: Monitor<dynamic_mixer::DynamicMixer<f32>>,
+    previous: [f32; 2],
+    current: [f32; 2],
+    phase: f32,
+    failed: bool,
+    reported: bool,
+}
+
+#[cfg(target_os = "horizon")]
+unsafe extern "C" {
+    fn lg_audio_init() -> i32;
+    fn lg_audio_free_buffers() -> i32;
+    fn lg_audio_submit(samples: *const i16, frames: u32) -> i32;
+    fn lg_audio_shutdown();
+}
+
+#[cfg(target_os = "horizon")]
+impl HorizonAudio {
+    fn open(source: dynamic_mixer::DynamicMixer<f32>, data: Arc<MonitorData>, record: bool) -> Result<Self> {
+        // libnx audout exposes DeviceOut as 48 kHz, stereo signed 16-bit PCM.
+        if unsafe { lg_audio_init() } != 0 {
+            return Err(anyhow!("libnx audout initialization/format check failed"));
+        }
+        let mut monitor = Monitor { source, data, block: Vec::with_capacity(1024), record };
+        let previous = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
+        let current = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
+        Ok(Self { monitor, previous, current, phase: 0.0, failed: false, reported: false })
+    }
+
+    fn pump(&mut self) {
+        if self.failed { return; }
+        let free = unsafe { lg_audio_free_buffers() };
+        if free < 0 { self.failed = true; return; }
+        let mut pcm = [0i16; 480 * 2];
+        for _ in 0..free.min(4) {
+            for frame in pcm.chunks_exact_mut(2) {
+                for (channel, output) in frame.iter_mut().enumerate() {
+                    let sample = self.previous[channel] * (1.0 - self.phase)
+                        + self.current[channel] * self.phase;
+                    let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+                    *output = (sample * i16::MAX as f32) as i16;
+                }
+                self.phase += 44100.0 / 48000.0;
+                while self.phase >= 1.0 {
+                    self.previous = self.current;
+                    self.current = [self.monitor.next().unwrap_or(0.0), self.monitor.next().unwrap_or(0.0)];
+                    self.phase -= 1.0;
+                }
+            }
+            if unsafe { lg_audio_submit(pcm.as_ptr(), 480) } != 0 {
+                self.failed = true;
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "horizon")]
+impl Drop for HorizonAudio {
+    fn drop(&mut self) { unsafe { lg_audio_shutdown(); } }
+}
+
+#[cfg(not(target_os = "horizon"))]
 impl Playback {
     fn open(data: Arc<MonitorData>, record: bool) -> Result<Self> {
         let (stream, handle) = OutputStream::try_default()?;
@@ -583,10 +657,34 @@ impl Playback {
             mixer,
         })
     }
+    fn pump(&mut self) {}
+    fn take_error(&self) -> bool { false }
     fn sink(&self) -> Sink {
         let (sink, queue) = Sink::new_idle();
         self.mixer.add(queue);
         sink
+    }
+}
+
+#[cfg(target_os = "horizon")]
+impl Playback {
+    fn open(data: Arc<MonitorData>, record: bool) -> Result<Self> {
+        let (mixer, source) = dynamic_mixer::mixer(2, 44100);
+        Ok(Self { _audio: HorizonAudio::open(source, data, record)?, mixer })
+    }
+    fn sink(&self) -> Sink {
+        let (sink, queue) = Sink::new_idle();
+        self.mixer.add(queue);
+        sink
+    }
+    fn pump(&mut self) { self._audio.pump(); }
+    fn take_error(&mut self) -> bool {
+        if self._audio.failed && !self._audio.reported {
+            self._audio.reported = true;
+            true
+        } else {
+            false
+        }
     }
 }
 struct Emitter {
@@ -966,6 +1064,12 @@ impl Audio {
                     * 0.7,
             );
             set_paused(&e.sink, paused);
+        }
+        if let Some(playback) = &mut self.playback {
+            playback.pump();
+            if playback.take_error() {
+                self.status = "Audio output failed".into();
+            }
         }
     }
     pub fn movement(&mut self, distance: f32, grounded: bool, jumped: bool, landed: bool) {

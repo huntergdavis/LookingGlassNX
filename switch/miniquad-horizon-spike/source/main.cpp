@@ -84,6 +84,95 @@ extern "C" int lg_csrng_fill(uint8_t* buffer, size_t length) {
     }
     return 0;
 }
+
+// Main-thread-only DeviceOut bridge. Rust submits one fixed 10 ms block at a
+// time; libnx owns each aligned slot until audout reports it released.
+static constexpr unsigned int LG_AUDIO_SLOTS = 4;
+static constexpr unsigned int LG_AUDIO_FRAMES = 480;
+static struct AudioSlot {
+    AudioOutBuffer descriptor{};
+    alignas(0x1000) int16_t pcm[2048]{};
+    bool free = true;
+} g_audio[LG_AUDIO_SLOTS];
+static bool g_audio_ready = false;
+static bool g_audio_started = false;
+static unsigned int g_audio_queued = 0;
+
+extern "C" int32_t lg_audio_init() {
+    if (g_audio_ready) return -1;
+    if (R_FAILED(audoutInitialize())) return -1;
+    if (audoutGetSampleRate() != 48000 || audoutGetChannelCount() != 2 ||
+        audoutGetPcmFormat() != PcmFormat_Int16) {
+        audoutExit();
+        return -1;
+    }
+    for (auto& slot : g_audio) {
+        slot.descriptor = {};
+        slot.descriptor.buffer = slot.pcm;
+        slot.descriptor.buffer_size = sizeof(slot.pcm);
+        slot.free = true;
+    }
+    g_audio_queued = 0;
+    g_audio_started = false;
+    g_audio_ready = true;
+    return 0;
+}
+
+extern "C" int32_t lg_audio_free_buffers() {
+    if (!g_audio_ready) return -1;
+    for (unsigned int attempt = 0; attempt < LG_AUDIO_SLOTS; ++attempt) {
+        AudioOutBuffer* released = nullptr;
+        u32 count = 0;
+        if (R_FAILED(audoutGetReleasedAudioOutBuffer(&released, &count))) return -1;
+        if (count == 0) break;
+        if (!released) return -1;
+        bool found = false;
+        for (auto& slot : g_audio) {
+            if (&slot.descriptor == released && !slot.free) {
+                slot.free = true;
+                if (g_audio_queued > 0) --g_audio_queued;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return -1;
+    }
+    unsigned int free_count = 0;
+    for (const auto& slot : g_audio) free_count += slot.free ? 1U : 0U;
+    return static_cast<int32_t>(free_count);
+}
+
+extern "C" int32_t lg_audio_submit(const int16_t* samples, uint32_t frames) {
+    if (!g_audio_ready || !samples || frames != LG_AUDIO_FRAMES) return -1;
+    AudioSlot* selected = nullptr;
+    for (auto& slot : g_audio) {
+        if (slot.free) { selected = &slot; break; }
+    }
+    if (!selected) return -1;
+    std::memcpy(selected->pcm, samples, frames * 2U * sizeof(int16_t));
+    selected->descriptor.data_size = frames * 2U * sizeof(int16_t);
+    selected->descriptor.data_offset = 0;
+    selected->descriptor.next = nullptr;
+    if (R_FAILED(audoutAppendAudioOutBuffer(&selected->descriptor))) return -1;
+    selected->free = false;
+    ++g_audio_queued;
+    if (!g_audio_started && g_audio_queued >= 3) {
+        if (R_FAILED(audoutStartAudioOut())) return -1;
+        g_audio_started = true;
+    }
+    return 0;
+}
+
+extern "C" void lg_audio_shutdown() {
+    if (!g_audio_ready) return;
+    if (g_audio_started) audoutStopAudioOut();
+    audoutExit();
+    g_audio_started = false;
+    g_audio_queued = 0;
+    g_audio_ready = false;
+    for (auto& slot : g_audio) slot.free = true;
+}
+
 extern "C" ssize_t getrandom(void* buffer, size_t length, unsigned int flags) {
     if (flags != 0 || length > static_cast<size_t>(std::numeric_limits<ssize_t>::max())) {
         errno = EINVAL;
