@@ -52,6 +52,38 @@ static void* proc(const char* name) { return reinterpret_cast<void*>(eglGetProcA
 extern "C" void* lg_egl_proc(const char* name) { return proc(name); }
 extern "C" void lg_set_gl_viewport(int width, int height) { glViewport(0, 0, width, height); }
 
+// Draw without assets or shaders before synchronous Rust startup. The displayed
+// buffer stays visible until the game submits its first frame.
+static void draw_loading(int width, int height) {
+    static constexpr uint8_t letters[][7] = {
+        {16,16,16,16,16,16,31}, {14,17,17,17,17,17,14},
+        {14,17,17,31,17,17,17}, {30,17,17,17,17,17,30},
+        {31,4,4,4,4,4,31}, {17,25,21,19,17,17,17},
+        {14,17,16,23,17,17,15},
+    };
+    const int pixel = std::max(1, std::min(width / 60, height / 24));
+    const int left = (width - 41 * pixel) / 2;
+    const int bottom = (height - 7 * pixel) / 2;
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.04f, 0.05f, 0.08f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glClearColor(0.9f, 0.9f, 0.85f, 1.f);
+    for (int letter = 0; letter < 7; ++letter) {
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if (letters[letter][row] & (1u << (4 - col))) {
+                    glScissor(left + (letter * 6 + col) * pixel,
+                              bottom + (6 - row) * pixel, pixel, pixel);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                }
+            }
+        }
+    }
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+}
+
 // Rust std uses the POSIX getrandom ABI for randomized HashMap seeds. Horizon
 // provides the same entropy source through libnx's CSRNG service instead.
 static std::mutex g_csrng_mutex;
@@ -326,6 +358,10 @@ int main(int, char**) {
                                    width,height,max_viewport[0],max_viewport[1]);
         diag(e); cleanup(); return 16;
     }
+    draw_loading(width, height);
+    if (glGetError() != GL_NO_ERROR) { diag("exit:loading-screen-gl-error:14"); cleanup(); return 14; }
+    if (!eglSwapBuffers(display, surface)) { diag("exit:loading-screen-swap-failed:9"); cleanup(); return 9; }
+    diag("egl:loading-screen-swap-succeeded");
     if (!proc("glGenVertexArrays")) { diag("exit:missing-gl-proc:glGenVertexArrays:7"); cleanup(); return 7; }
     if (!proc("glBindVertexArray")) { diag("exit:missing-gl-proc:glBindVertexArray:7"); cleanup(); return 7; }
     if (!proc("glDeleteVertexArrays")) { diag("exit:missing-gl-proc:glDeleteVertexArrays:7"); cleanup(); return 7; }
