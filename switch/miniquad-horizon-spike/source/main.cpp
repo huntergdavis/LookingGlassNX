@@ -85,9 +85,9 @@ extern "C" int lg_csrng_fill(uint8_t* buffer, size_t length) {
     return 0;
 }
 
-// Main-thread-only DeviceOut bridge. Rust submits one fixed 10 ms block at a
-// time; libnx owns each aligned slot until audout reports it released.
-static constexpr unsigned int LG_AUDIO_SLOTS = 16;
+// Single-audio-worker DeviceOut bridge. Rust submits one fixed 10 ms block at
+// a time; libnx owns each aligned slot until audout reports it released.
+static constexpr unsigned int LG_AUDIO_SLOTS = 8;
 static constexpr unsigned int LG_AUDIO_FRAMES = 480;
 static struct AudioSlot {
     AudioOutBuffer descriptor{};

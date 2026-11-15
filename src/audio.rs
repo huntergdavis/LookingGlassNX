@@ -15,7 +15,7 @@ use std::{
     io::Cursor,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -579,12 +579,10 @@ struct Playback {
 
 #[cfg(target_os = "horizon")]
 struct HorizonAudio {
-    monitor: Monitor<dynamic_mixer::DynamicMixer<f32>>,
-    previous: [f32; 2],
-    current: [f32; 2],
-    phase: f32,
-    failed: bool,
+    stop: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
     reported: bool,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(target_os = "horizon")]
@@ -596,42 +594,100 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "horizon")]
+struct HorizonAudioSession(Arc<AtomicBool>);
+
+#[cfg(target_os = "horizon")]
+impl Drop for HorizonAudioSession {
+    fn drop(&mut self) {
+        if unsafe { lg_audio_shutdown() } != 0 {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(target_os = "horizon")]
 impl HorizonAudio {
     fn open(source: dynamic_mixer::DynamicMixer<f32>, data: Arc<MonitorData>, record: bool) -> Result<Self> {
-        // libnx audout exposes DeviceOut as 48 kHz, stereo signed 16-bit PCM.
-        if unsafe { lg_audio_init() } != 0 {
-            return Err(anyhow!("libnx audout initialization/format check failed"));
+        let stop = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_failed = failed.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("lookingglass-audio".into())
+            .spawn(move || {
+                // audout, its static descriptors, and the resampler all belong
+                // to this worker for their full lifetime.
+                if unsafe { lg_audio_init() } != 0 {
+                    worker_failed.store(true, Ordering::Release);
+                    let _ = ready_tx.send(false);
+                    return;
+                }
+                let _session = HorizonAudioSession(worker_failed.clone());
+                let _ = ready_tx.send(true);
+                let mut monitor = Monitor { source, data, block: Vec::with_capacity(1024), record };
+                let mut previous = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
+                let mut current = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
+                let mut phase = 0.0f32;
+                let mut failed_output = false;
+                while !worker_stop.load(Ordering::Acquire) {
+                    let free = unsafe { lg_audio_free_buffers() };
+                    if free < 0 {
+                        failed_output = true;
+                        break;
+                    }
+                    let mut pcm = [0i16; 480 * 2];
+                    for _ in 0..free.min(8) {
+                        for frame in pcm.chunks_exact_mut(2) {
+                            for (channel, output) in frame.iter_mut().enumerate() {
+                                let sample = previous[channel] * (1.0 - phase) + current[channel] * phase;
+                                let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+                                *output = (sample * i16::MAX as f32) as i16;
+                            }
+                            phase += 44100.0 / 48000.0;
+                            while phase >= 1.0 {
+                                previous = current;
+                                current = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
+                                phase -= 1.0;
+                            }
+                        }
+                        if unsafe { lg_audio_submit(pcm.as_ptr(), 480) } != 0 {
+                            failed_output = true;
+                            break;
+                        }
+                    }
+                    if failed_output { break; }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                if failed_output { worker_failed.store(true, Ordering::Release); }
+            })?;
+        match ready_rx.recv() {
+            Ok(true) => Ok(Self { stop, failed, reported: false, worker: Some(worker) }),
+            Ok(false) => {
+                let _ = worker.join();
+                Err(anyhow!("libnx audout initialization/format check failed"))
+            }
+            Err(error) => {
+                stop.store(true, Ordering::Release);
+                let _ = worker.join();
+                Err(error.into())
+            }
         }
-        let mut monitor = Monitor { source, data, block: Vec::with_capacity(1024), record };
-        let previous = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
-        let current = [monitor.next().unwrap_or(0.0), monitor.next().unwrap_or(0.0)];
-        Ok(Self { monitor, previous, current, phase: 0.0, failed: false, reported: false })
     }
 
-    fn pump(&mut self) {
-        if self.failed { return; }
-        let free = unsafe { lg_audio_free_buffers() };
-        if free < 0 { self.failed = true; return; }
-        let mut pcm = [0i16; 480 * 2];
-        for _ in 0..free.min(16) {
-            for frame in pcm.chunks_exact_mut(2) {
-                for (channel, output) in frame.iter_mut().enumerate() {
-                    let sample = self.previous[channel] * (1.0 - self.phase)
-                        + self.current[channel] * self.phase;
-                    let sample = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
-                    *output = (sample * i16::MAX as f32) as i16;
-                }
-                self.phase += 44100.0 / 48000.0;
-                while self.phase >= 1.0 {
-                    self.previous = self.current;
-                    self.current = [self.monitor.next().unwrap_or(0.0), self.monitor.next().unwrap_or(0.0)];
-                    self.phase -= 1.0;
-                }
-            }
-            if unsafe { lg_audio_submit(pcm.as_ptr(), 480) } != 0 {
-                self.failed = true;
-                break;
-            }
+    fn take_error(&mut self) -> bool {
+        if self.failed.load(Ordering::Acquire) && !self.reported {
+            self.reported = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            if worker.join().is_err() { self.failed.store(true, Ordering::Release); }
         }
     }
 }
@@ -639,8 +695,9 @@ impl HorizonAudio {
 #[cfg(target_os = "horizon")]
 impl Drop for HorizonAudio {
     fn drop(&mut self) {
-        if unsafe { lg_audio_shutdown() } != 0 {
-            eprintln!("Audio shutdown could not confirm all libnx buffers released");
+        self.stop();
+        if self.failed.load(Ordering::Acquire) && !self.reported {
+            eprintln!("Horizon audio worker or audout shutdown failed");
         }
     }
 }
@@ -681,15 +738,8 @@ impl Playback {
         self.mixer.add(queue);
         sink
     }
-    fn pump(&mut self) { self._audio.pump(); }
-    fn take_error(&mut self) -> bool {
-        if self._audio.failed && !self._audio.reported {
-            self._audio.reported = true;
-            true
-        } else {
-            false
-        }
-    }
+    fn pump(&mut self) {}
+    fn take_error(&mut self) -> bool { self._audio.take_error() }
 }
 struct Emitter {
     spec: Speaker,

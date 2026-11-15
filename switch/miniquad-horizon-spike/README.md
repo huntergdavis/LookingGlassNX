@@ -65,16 +65,19 @@ This follows the Switch reference's native-window dimension query. This source
 change has not yet been built or device-verified.
 
 Horizon audio now has a source-only libnx `audout` path. It keeps the existing
-44.1 kHz stereo mixer and capture monitor, linearly resamples on the applet
-thread to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
-through sixteen 0x1000-aligned buffers (160 ms total queue capacity). The
-queue is primed before playback and released buffers are polled once per frame;
-no audio worker thread is created. Longer frame stalls can still empty the
-queue and cause a gap until the next update refills it. Shutdown stops and
-flushes audout, checks that every descriptor has returned, and leaves the
-service and static storage intact if ownership cannot be confirmed. This
-implementation has not been built or verified on the Switch. Physical audio
-output and underrun behavior remain open device checks.
+44.1 kHz stereo mixer and capture monitor, linearly resamples in the audio
+worker to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
+through eight 0x1000-aligned buffers (80 ms total queue capacity). A
+dedicated Rust worker owns audout and polls released buffers every 5 ms, so
+render-thread stalls do not stop audio production. It starts with an audout
+initialization handshake and is stopped and joined when playback is dropped.
+Shutdown stops and flushes audout, checks that every descriptor has returned,
+and leaves the service and static storage intact if ownership cannot be
+confirmed. Scheduling delays longer than the bounded queue can still cause a
+gap. The worker uses Rust's pthread-key TLS path validated by the earlier
+standalone Switch TLS probe; worker lifecycle and audio output have not been
+built or verified on the Switch. Physical audio output and underrun behavior
+remain open device checks.
 
 The current hardware diagnostic 003 ends at `rust:game-entry-entered`; it has
 no game-entry accepted/error marker. The source now has an unbuilt candidate
