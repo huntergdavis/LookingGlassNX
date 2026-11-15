@@ -589,6 +589,70 @@ struct HorizonAudio {
 }
 
 #[cfg(target_os = "horizon")]
+enum HorizonAudioStartupEvent {
+    WorkerStarted,
+    InitBegin,
+    InitResult(i32),
+    BufferQueryFailed,
+    BufferSubmitFailed(i32),
+    AudioStartFailed,
+    WorkerReady,
+    OutputFailed,
+    ExitedBeforeReady,
+}
+
+#[cfg(target_os = "horizon")]
+fn report_horizon_audio_startup(
+    events: &std::sync::mpsc::Receiver<HorizonAudioStartupEvent>,
+) {
+    while let Ok(event) = events.try_recv() {
+        match event {
+            HorizonAudioStartupEvent::WorkerStarted => {
+                crate::horizon_diag("rust:audio-worker:started");
+            }
+            HorizonAudioStartupEvent::InitBegin => {
+                crate::horizon_diag("rust:audio-init:begin");
+            }
+            HorizonAudioStartupEvent::InitResult(0) => {
+                crate::horizon_diag("rust:audio-init:ready");
+            }
+            HorizonAudioStartupEvent::InitResult(-1) => {
+                crate::horizon_diag("rust:audio-init:failed:reservation");
+            }
+            HorizonAudioStartupEvent::InitResult(-2) => {
+                crate::horizon_diag("rust:audio-init:failed:service");
+            }
+            HorizonAudioStartupEvent::InitResult(-3) => {
+                crate::horizon_diag("rust:audio-init:failed:format");
+            }
+            HorizonAudioStartupEvent::InitResult(code) => {
+                crate::horizon_diag(&format!("rust:audio-init:failed:code={code}"));
+            }
+            HorizonAudioStartupEvent::BufferQueryFailed => {
+                crate::horizon_diag("rust:audio-buffer-query:failed");
+            }
+            HorizonAudioStartupEvent::BufferSubmitFailed(code) => {
+                crate::horizon_diag(&format!(
+                    "rust:audio-buffer-submit:failed:code={code}"
+                ));
+            }
+            HorizonAudioStartupEvent::AudioStartFailed => {
+                crate::horizon_diag("rust:audio-start:failed");
+            }
+            HorizonAudioStartupEvent::WorkerReady => {
+                crate::horizon_diag("rust:audio-worker:ready:initial-buffers=3");
+            }
+            HorizonAudioStartupEvent::OutputFailed => {
+                crate::horizon_diag("rust:audio-worker:output-failed");
+            }
+            HorizonAudioStartupEvent::ExitedBeforeReady => {
+                crate::horizon_diag("rust:audio-worker:exited-before-ready");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "horizon")]
 unsafe extern "C" {
     fn lg_audio_init() -> i32;
     fn lg_audio_free_buffers() -> i32;
@@ -629,24 +693,26 @@ impl HorizonAudio {
         let worker_failed = failed.clone();
         let worker_closed = closed.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        // Worker events are nonblocking and contain no logger handles. The
+        // caller reports them only after the readiness wait resolves, so disk
+        // logging cannot consume the two-second startup deadline or race logger
+        // shutdown after a timed-out worker detaches.
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(8);
         let worker = match std::thread::Builder::new()
             .name("lookingglass-audio".into())
             .spawn(move || {
                 // audout, its static descriptors, and the resampler all belong
                 // to this worker for their full lifetime.
-                crate::horizon_diag("rust:audio-worker:started");
+                let _ = startup_tx.try_send(HorizonAudioStartupEvent::WorkerStarted);
                 let mut ready_tx = Some(ready_tx);
-                crate::horizon_diag("rust:audio-init:begin");
+                let _ = startup_tx.try_send(HorizonAudioStartupEvent::InitBegin);
                 let init_result = unsafe { lg_audio_init() };
+                let _ = startup_tx.try_send(HorizonAudioStartupEvent::InitResult(init_result));
                 if init_result != 0 {
-                    crate::horizon_diag(&format!(
-                        "rust:audio-init:failed:code={init_result}"
-                    ));
                     worker_failed.store(true, Ordering::Release);
                     if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(false); }
                     return;
                 }
-                crate::horizon_diag("rust:audio-init:ready");
                 let _session = HorizonAudioSession {
                     failed: worker_failed.clone(),
                     closed: worker_closed,
@@ -660,7 +726,7 @@ impl HorizonAudio {
                 while !worker_stop.load(Ordering::Acquire) {
                     let free = unsafe { lg_audio_free_buffers() };
                     if free < 0 {
-                        crate::horizon_diag("rust:audio-buffer-query:failed");
+                        let _ = startup_tx.try_send(HorizonAudioStartupEvent::BufferQueryFailed);
                         failed_output = true;
                         break;
                     }
@@ -681,15 +747,18 @@ impl HorizonAudio {
                         }
                         let submit_result = unsafe { lg_audio_submit(pcm.as_ptr(), 480) };
                         if submit_result != 0 {
-                            crate::horizon_diag(&format!(
-                                "rust:audio-buffer-submit:failed:code={submit_result}"
-                            ));
+                            let event = if submit_result == -2 {
+                                HorizonAudioStartupEvent::AudioStartFailed
+                            } else {
+                                HorizonAudioStartupEvent::BufferSubmitFailed(submit_result)
+                            };
+                            let _ = startup_tx.try_send(event);
                             failed_output = true;
                             break;
                         }
                         submitted += 1;
                         if submitted == 3 {
-                            crate::horizon_diag("rust:audio-worker:ready:initial-buffers=3");
+                            let _ = startup_tx.try_send(HorizonAudioStartupEvent::WorkerReady);
                             if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(true); }
                         }
                     }
@@ -697,11 +766,11 @@ impl HorizonAudio {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 if failed_output {
-                    crate::horizon_diag("rust:audio-worker:output-failed");
+                    let _ = startup_tx.try_send(HorizonAudioStartupEvent::OutputFailed);
                     worker_failed.store(true, Ordering::Release);
                 }
                 if let Some(ready_tx) = ready_tx.take() {
-                    crate::horizon_diag("rust:audio-worker:exited-before-ready");
+                    let _ = startup_tx.try_send(HorizonAudioStartupEvent::ExitedBeforeReady);
                     worker_failed.store(true, Ordering::Release);
                     let _ = ready_tx.send(false);
                 }
@@ -713,27 +782,38 @@ impl HorizonAudio {
                 }
             };
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(true) => Ok(Self {
-                stop,
-                failed,
-                closed,
-                reported: false,
-                joined: false,
-                owns_reservation: true,
-                worker: Some(worker),
-            }),
+            Ok(true) => {
+                report_horizon_audio_startup(&startup_rx);
+                Ok(Self {
+                    stop,
+                    failed,
+                    closed,
+                    reported: false,
+                    joined: false,
+                    owns_reservation: true,
+                    worker: Some(worker),
+                })
+            }
             Ok(false) => {
+                report_horizon_audio_startup(&startup_rx);
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
             Err(error) => {
                 stop.store(true, Ordering::Release);
+                report_horizon_audio_startup(&startup_rx);
                 match error {
-                    std::sync::mpsc::RecvTimeoutError::Timeout => Err(anyhow!(
-                        "libnx audout worker did not initialize within 2 seconds; worker asked to stop"
-                    )),
-                    std::sync::mpsc::RecvTimeoutError::Disconnected => Err(anyhow!(
-                        "libnx audout worker exited before initialization completed"
-                    )),
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        crate::horizon_diag("rust:audio-worker:startup-wait-timeout");
+                        Err(anyhow!(
+                            "libnx audout worker did not initialize within 2 seconds; worker asked to stop"
+                        ))
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                        crate::horizon_diag("rust:audio-worker:startup-channel-disconnected");
+                        Err(anyhow!(
+                            "libnx audout worker exited before initialization completed"
+                        ))
+                    }
                 }
             }
         }

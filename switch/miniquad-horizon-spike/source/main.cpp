@@ -100,28 +100,25 @@ static bool g_audio_started = false;
 static unsigned int g_audio_queued = 0;
 static std::atomic<bool> g_audio_reserved{false};
 
+// Private Rust FFI status: -1 reserved, -2 audoutInitialize failed,
+// -3 unsupported PCM format, 0 ready.
 extern "C" int32_t lg_audio_init() {
     bool expected = false;
     if (!g_audio_reserved.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        diag("audio:reservation:failed");
         return -1;
     }
-    diag("audio:audout-init:begin");
     if (R_FAILED(audoutInitialize())) {
-        diag("audio:audout-init:failed");
-        return -1;
+        g_audio_reserved.store(false, std::memory_order_release);
+        return -2;
     }
-    diag("audio:audout-init:ready");
     const auto sample_rate = audoutGetSampleRate();
     const auto channels = audoutGetChannelCount();
     const auto pcm_format = audoutGetPcmFormat();
     if (sample_rate != 48000 || channels != 2 || pcm_format != PcmFormat_Int16) {
-        diag("audio:audout-format:unsupported");
         audoutExit();
         g_audio_reserved.store(false, std::memory_order_release);
-        return -1;
+        return -3;
     }
-    diag("audio:audout-format:ready");
     for (auto& slot : g_audio) {
         slot.descriptor = {};
         slot.descriptor.buffer = slot.pcm;
@@ -173,13 +170,9 @@ extern "C" int32_t lg_audio_submit(const int16_t* samples, uint32_t frames) {
     selected->free = false;
     ++g_audio_queued;
     if (!g_audio_started && g_audio_queued >= 3) {
-        diag("audio:audout-start:begin");
-        if (R_FAILED(audoutStartAudioOut())) {
-            diag("audio:audout-start:failed");
-            return -1;
-        }
+        // Rust distinguishes a start failure from an append failure.
+        if (R_FAILED(audoutStartAudioOut())) return -2;
         g_audio_started = true;
-        diag("audio:audout-start:ready");
     }
     return 0;
 }
