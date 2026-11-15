@@ -592,7 +592,7 @@ unsafe extern "C" {
     fn lg_audio_init() -> i32;
     fn lg_audio_free_buffers() -> i32;
     fn lg_audio_submit(samples: *const i16, frames: u32) -> i32;
-    fn lg_audio_shutdown();
+    fn lg_audio_shutdown() -> i32;
 }
 
 #[cfg(target_os = "horizon")]
@@ -613,7 +613,7 @@ impl HorizonAudio {
         let free = unsafe { lg_audio_free_buffers() };
         if free < 0 { self.failed = true; return; }
         let mut pcm = [0i16; 480 * 2];
-        for _ in 0..free.min(4) {
+        for _ in 0..free.min(16) {
             for frame in pcm.chunks_exact_mut(2) {
                 for (channel, output) in frame.iter_mut().enumerate() {
                     let sample = self.previous[channel] * (1.0 - self.phase)
@@ -638,7 +638,11 @@ impl HorizonAudio {
 
 #[cfg(target_os = "horizon")]
 impl Drop for HorizonAudio {
-    fn drop(&mut self) { unsafe { lg_audio_shutdown(); } }
+    fn drop(&mut self) {
+        if unsafe { lg_audio_shutdown() } != 0 {
+            eprintln!("Audio shutdown could not confirm all libnx buffers released");
+        }
+    }
 }
 
 #[cfg(not(target_os = "horizon"))]

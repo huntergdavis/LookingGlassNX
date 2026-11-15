@@ -67,11 +67,14 @@ change has not yet been built or device-verified.
 Horizon audio now has a source-only libnx `audout` path. It keeps the existing
 44.1 kHz stereo mixer and capture monitor, linearly resamples on the applet
 thread to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
-through four 0x1000-aligned buffers. The queue is primed before playback and
-released buffers are polled once per frame; no audio worker thread is created.
-This implementation has not been built or verified on the Switch. Physical
-audio output, underrun behavior, and shutdown with queued buffers remain open
-device checks.
+through sixteen 0x1000-aligned buffers (160 ms total queue capacity). The
+queue is primed before playback and released buffers are polled once per frame;
+no audio worker thread is created. Longer frame stalls can still empty the
+queue and cause a gap until the next update refills it. Shutdown stops and
+flushes audout, checks that every descriptor has returned, and leaves the
+service and static storage intact if ownership cannot be confirmed. This
+implementation has not been built or verified on the Switch. Physical audio
+output and underrun behavior remain open device checks.
 
 The current hardware diagnostic 003 ends at `rust:game-entry-entered`; it has
 no game-entry accepted/error marker. The source now has an unbuilt candidate

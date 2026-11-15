@@ -87,7 +87,7 @@ extern "C" int lg_csrng_fill(uint8_t* buffer, size_t length) {
 
 // Main-thread-only DeviceOut bridge. Rust submits one fixed 10 ms block at a
 // time; libnx owns each aligned slot until audout reports it released.
-static constexpr unsigned int LG_AUDIO_SLOTS = 4;
+static constexpr unsigned int LG_AUDIO_SLOTS = 16;
 static constexpr unsigned int LG_AUDIO_FRAMES = 480;
 static struct AudioSlot {
     AudioOutBuffer descriptor{};
@@ -163,14 +163,18 @@ extern "C" int32_t lg_audio_submit(const int16_t* samples, uint32_t frames) {
     return 0;
 }
 
-extern "C" void lg_audio_shutdown() {
-    if (!g_audio_ready) return;
-    if (g_audio_started) audoutStopAudioOut();
-    audoutExit();
+extern "C" int32_t lg_audio_shutdown() {
+    if (!g_audio_ready) return 0;
+    if (g_audio_started && R_FAILED(audoutStopAudioOut())) return -1;
     g_audio_started = false;
+    bool flushed = false;
+    if (R_FAILED(audoutFlushAudioOutBuffers(&flushed)) || (!flushed && g_audio_queued != 0)) return -2;
+    if (lg_audio_free_buffers() < 0 || g_audio_queued != 0) return -3;
+    audoutExit();
     g_audio_queued = 0;
     g_audio_ready = false;
     for (auto& slot : g_audio) slot.free = true;
+    return 0;
 }
 
 extern "C" ssize_t getrandom(void* buffer, size_t length, unsigned int flags) {
