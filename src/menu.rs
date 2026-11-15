@@ -1286,7 +1286,6 @@ impl Menu {
         }
     }
     fn draw_mirror(&mut self) {
-        horizon_menu_diag!("rust:settings-mirror:camera-begin");
         let eye = vec3(125., 0., 38.);
         set_camera(&Camera3D {
             position: eye,
@@ -1298,14 +1297,10 @@ impl Menu {
             aspect: Some(384. / 480.),
             ..Default::default()
         });
-        horizon_menu_diag!("rust:settings-mirror:camera-ready");
         clear_background(Color::new(0., 0., 0., 0.));
-        horizon_menu_diag!("rust:settings-mirror:clear-ready");
         self.material
             .atmosphere(&crate::environment::Atmosphere::default(), eye);
-        horizon_menu_diag!("rust:settings-mirror:atmosphere-ready");
         self.material.bind();
-        horizon_menu_diag!("rust:settings-mirror:material-bound");
         self.mirror.draw_filtered(
             "idle_stand_rocktoes",
             get_time() as f32,
@@ -1318,10 +1313,8 @@ impl Menu {
             false,
             &["material15", "material16", "material17"],
         );
-        horizon_menu_diag!("rust:settings-mirror:puppet-drawn");
         gl_use_default_material();
         set_default_camera();
-        horizon_menu_diag!("rust:settings-mirror:returned");
     }
     fn draw(&mut self, page: Page, buttons: &[Button]) {
         self.draw_into(page, buttons, None);
@@ -1331,7 +1324,14 @@ impl Menu {
         let hit = buttons.iter().position(|b| b.rect.contains(canvas.pointer(Vec2::from(mouse_position()))));
         if page.layout() == "controls" {
             #[cfg(target_os = "horizon")]
-            crate::horizon_diag("rust:settings-mirror:bypassed-horizon");
+            {
+                // Once per session: this branch runs every frame on each controls-layout page.
+                static BYPASS_LOGGED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !BYPASS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    crate::horizon_diag("rust:settings-mirror:bypassed-horizon");
+                }
+            }
             #[cfg(not(target_os = "horizon"))]
             self.draw_mirror();
         }

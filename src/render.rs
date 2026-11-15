@@ -1074,6 +1074,9 @@ impl Scene {
         );
         horizon_scene_diag!("rust:scene-load:{name}:bsp-parse-begin");
         let mut map = Bsp::parse(&bsp).with_context(|| format!("Loading {name}"))?;
+        // Release the decompressed BSP bytes now, as the old temporary did, so they are not
+        // held through World::from_bsp and Scene::from_parts (peak-RAM regression).
+        drop(bsp);
         horizon_scene_diag!("rust:scene-load:{name}:bsp-parse-ready");
         map.difficulty = difficulty;
         horizon_scene_diag!("rust:scene-load:{name}:collision-world-begin");
