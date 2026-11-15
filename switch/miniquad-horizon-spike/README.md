@@ -70,7 +70,9 @@ worker to DeviceOut's 48 kHz stereo Int16 format, and submits 10 ms blocks
 through eight 0x1000-aligned buffers (80 ms total queue capacity). A
 dedicated Rust worker owns audout and polls released buffers every 5 ms, so
 render-thread stalls do not stop audio production. It starts with an audout
-initialization handshake and is stopped and joined when playback is dropped.
+initialization handshake with a 2 second limit. Playback drop requests stop
+and waits up to 250 ms for worker exit; a stuck worker is detached while its
+static audout slots remain allocated and unavailable for reuse.
 Shutdown stops and flushes audout, checks that every descriptor has returned,
 and leaves the service and static storage intact if ownership cannot be
 confirmed. Scheduling delays longer than the bounded queue can still cause a

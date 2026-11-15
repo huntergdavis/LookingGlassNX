@@ -661,21 +661,34 @@ impl HorizonAudio {
                 }
                 if failed_output { worker_failed.store(true, Ordering::Release); }
             })?;
-        match ready_rx.recv() {
+        match ready_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(true) => Ok(Self { stop, failed, reported: false, worker: Some(worker) }),
             Ok(false) => {
-                let _ = worker.join();
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
             Err(error) => {
                 stop.store(true, Ordering::Release);
-                let _ = worker.join();
-                Err(error.into())
+                match error {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => Err(anyhow!(
+                        "libnx audout worker did not initialize within 2 seconds; worker asked to stop"
+                    )),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => Err(anyhow!(
+                        "libnx audout worker exited before initialization completed"
+                    )),
+                }
             }
         }
     }
 
     fn take_error(&mut self) -> bool {
+        let exited_early = !self.stop.load(Ordering::Acquire)
+            && self.worker.as_ref().is_some_and(|worker| worker.is_finished());
+        if exited_early {
+            self.failed.store(true, Ordering::Release);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
         if self.failed.load(Ordering::Acquire) && !self.reported {
             self.reported = true;
             true
@@ -687,7 +700,18 @@ impl HorizonAudio {
     fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            if worker.join().is_err() { self.failed.store(true, Ordering::Release); }
+            // Do not let a broken Horizon service call hang game shutdown.
+            // A timed-out handle is detached; its static C++ slots remain
+            // allocated and g_audio_ready prevents in-process reuse.
+            for _ in 0..50 {
+                if worker.is_finished() { break; }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if worker.is_finished() {
+                if worker.join().is_err() { self.failed.store(true, Ordering::Release); }
+            } else {
+                self.failed.store(true, Ordering::Release);
+            }
         }
     }
 }
