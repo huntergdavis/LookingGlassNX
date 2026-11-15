@@ -584,6 +584,7 @@ struct HorizonAudio {
     closed: Arc<AtomicBool>,
     reported: bool,
     joined: bool,
+    owns_reservation: bool,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -695,7 +696,15 @@ impl HorizonAudio {
                 }
             };
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(true) => Ok(Self { stop, failed, closed, reported: false, joined: false, worker: Some(worker) }),
+            Ok(true) => Ok(Self {
+                stop,
+                failed,
+                closed,
+                reported: false,
+                joined: false,
+                owns_reservation: true,
+                worker: Some(worker),
+            }),
             Ok(false) => {
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
@@ -754,8 +763,11 @@ impl HorizonAudio {
         self.release_reservation_if_closed();
     }
 
-    fn release_reservation_if_closed(&self) {
-        if self.joined && self.closed.load(Ordering::Acquire) {
+    fn release_reservation_if_closed(&mut self) {
+        if self.owns_reservation && self.joined && self.closed.load(Ordering::Acquire) {
+            // Consume this instance's ownership before allowing a new opener;
+            // a later Drop on this object must not clear its successor's flag.
+            self.owns_reservation = false;
             HORIZON_AUDIO_RESERVED.store(false, Ordering::Release);
         }
     }
