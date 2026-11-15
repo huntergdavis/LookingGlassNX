@@ -21,11 +21,15 @@ pub async fn choose(
 ) -> Start {
     menu.frontend = true;
     menu.open(Page::Main, preferences, audio.settings);
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:start-menu:opened:Main");
     loop {
-        match menu
+        let action = menu
             .run(preferences, audio, store, Vec3::ZERO, 0., input)
-            .await
-        {
+            .await;
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!("rust:start-menu:action-returned:{action:?}"));
+        match action {
             Action::Coop => {
                 audio.update(0., Vec3::ZERO, 0., true, true);
                 let visit = crate::coop::protocol::Visit {
@@ -66,6 +70,8 @@ pub async fn choose(
                 options.entry = None;
                 options.difficulty = difficulty;
                 options.new_game = true;
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag(&format!("rust:start-menu:new-game-ready:{difficulty:?}"));
                 return Start::NewGame;
             }
             Action::Load(slot) => match store.read(slot) {

@@ -16,6 +16,13 @@ mod save_screen;
 mod chapters;
 pub use chapters::ChapterChoice;
 
+macro_rules! horizon_menu_diag {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!($($arg)*));
+    }}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Main,
@@ -1623,6 +1630,10 @@ impl Menu {
     ) -> Action {
         show_mouse(false);
         self.refresh_saves(store);
+        let mut traced_page: Option<Page> = None;
+        let mut page_trace_count = 0u8;
+        let mut traced_loop_buttons_page: Option<Page> = None;
+        let mut loop_buttons_trace_count = 0u8;
         #[cfg(target_os = "horizon")]
         let mut main_menu_draw_reported = false;
         loop {
@@ -1633,7 +1644,17 @@ impl Menu {
             self.using_pad = input.using_pad;
             self.save_film.update_audio(audio.settings, focused);
             let previous_selected = self.selected;
+            let trace_loop_buttons = traced_loop_buttons_page != Some(page)
+                && loop_buttons_trace_count < 4;
+            if trace_loop_buttons {
+                traced_loop_buttons_page = Some(page);
+                loop_buttons_trace_count += 1;
+                horizon_menu_diag!("rust:menu:input-buttons:begin:{page:?}");
+            }
             let buttons = self.buttons(page);
+            if trace_loop_buttons {
+                horizon_menu_diag!("rust:menu:input-buttons:ready:{page:?}:count={}", buttons.len());
+            }
             self.selected = self.selected.min(buttons.len().saturating_sub(1));
             audio.update(0., listener, yaw, true, true);
             let canvas = Canvas::new(screen_width(), screen_height());
@@ -1753,8 +1774,13 @@ impl Menu {
                             Click::Back | Click::Cancel => {
                                 action = self.back(page, prefs, audio.settings)
                             }
-                            Click::Page(p) => self.open(p, prefs, audio.settings),
+                            Click::Page(p) => {
+                                horizon_menu_diag!("rust:menu:page-open:begin:{p:?}");
+                                self.open(p, prefs, audio.settings);
+                                horizon_menu_diag!("rust:menu:page-open:ready:{p:?}");
+                            }
                             Click::Action(a) => {
+                                horizon_menu_diag!("rust:menu:action-selected:{a:?}");
                                 if a == Action::Chapters {
                                     // Keep the main menu underneath the modal chapter chooser.
                                 } else if matches!(a, Action::Save(_) | Action::Load(_)) {
@@ -1868,15 +1894,33 @@ impl Menu {
             }
             // Consume the activating click/key before handing control back to gameplay.
             if let Some(action) = action {
+                horizon_menu_diag!("rust:menu:action-return:before-next-frame:{action:?}");
                 input.suppress();
                 show_mouse(true);
                 next_frame().await;
+                horizon_menu_diag!("rust:menu:action-return:after-next-frame:{action:?}");
                 return action;
             }
             let page = self.page.unwrap_or(Page::Main);
+            let trace_page_transition = traced_page != Some(page) && page_trace_count < 8;
+            if trace_page_transition {
+                traced_page = Some(page);
+                page_trace_count += 1;
+                horizon_menu_diag!("rust:menu:page-enter:{page:?}");
+                horizon_menu_diag!("rust:menu:buttons-build:begin:{page:?}");
+            }
             let buttons = self.buttons(page);
+            if trace_page_transition {
+                horizon_menu_diag!("rust:menu:buttons-build:ready:{page:?}:count={}", buttons.len());
+            }
             self.selected = self.selected.min(buttons.len().saturating_sub(1));
+            if trace_page_transition {
+                horizon_menu_diag!("rust:menu:draw:begin:{page:?}");
+            }
             self.draw(page, &buttons);
+            if trace_page_transition {
+                horizon_menu_diag!("rust:menu:draw:returned:{page:?}");
+            }
             #[cfg(target_os = "horizon")]
             if !main_menu_draw_reported && self.frontend && page == Page::Main {
                 crate::horizon_diag("rust:main-menu-draw-submitted");
@@ -1900,7 +1944,13 @@ impl Menu {
                     self.message = format!("Capture failed: {e}");
                 }
             }
+            if trace_page_transition {
+                horizon_menu_diag!("rust:menu:next-frame:begin:{page:?}");
+            }
             next_frame().await;
+            if trace_page_transition {
+                horizon_menu_diag!("rust:menu:next-frame:returned:{page:?}");
+            }
         }
     }
 }

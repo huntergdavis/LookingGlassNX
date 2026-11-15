@@ -611,9 +611,21 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     } else if saves_enabled && !options.new_game && !options.direct_map && options.frames.is_none() {
         match start::choose(&mut assets, &mut options, &mut escape_menu, &mut preferences,
             &mut input, &mut audio, &store, &maps).await {
-            start::Start::Chapter => { opening_requested = false; None }
-            start::Start::NewGame => { opening_requested = true; None }
-            start::Start::Load(loaded) => Some(*loaded),
+            start::Start::Chapter => {
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag("rust:start-choice:chapter");
+                opening_requested = false; None
+            }
+            start::Start::NewGame => {
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag("rust:start-choice:new-game");
+                opening_requested = true; None
+            }
+            start::Start::Load(loaded) => {
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag("rust:start-choice:load");
+                Some(*loaded)
+            }
             start::Start::Quit => return Ok(()),
         }
     } else {
@@ -621,6 +633,8 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     };
     escape_menu.frontend = false;
     escape_menu.close();
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:viewer:frontend-menu-closed");
     if let Some(loaded) = &resume {
         options.map = loaded.game.level()?.map.clone();
         options.entry = loaded.game.level()?.entry.clone();
@@ -635,7 +649,11 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
         .iter()
         .position(|m| m == &options.map)
         .context("Map not found")?;
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!("rust:world-load:begin:map={}", maps[current]));
     let mut scene = load_scene(&mut assets, &maps[current], options.difficulty)?;
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag(&format!("rust:world-load:ready:map={}", maps[current]));
     let mut level_art = LevelArt::default();
     let mut skip_scene = crate::cinematic::Skip::default();
     let mut power_art = crate::powerups::Art::load(&mut assets)?;
@@ -875,7 +893,9 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
         && opening_requested
         && options.frames.is_none()
     {
-        match crate::movie::play(
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:opening-film:begin");
+        let opening_result = crate::movie::play(
             &mut assets,
             &mut audio,
             &ui,
@@ -883,8 +903,10 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
             &preferences,
             "opening",
         )
-        .await
-        {
+        .await;
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:opening-film:returned");
+        match opening_result {
             Ok(false) => return Ok(()),
             Err(e) => {
                 eprintln!("Opening film unavailable: {e:#}");
