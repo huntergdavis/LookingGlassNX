@@ -634,12 +634,19 @@ impl HorizonAudio {
             .spawn(move || {
                 // audout, its static descriptors, and the resampler all belong
                 // to this worker for their full lifetime.
+                crate::horizon_diag("rust:audio-worker:started");
                 let mut ready_tx = Some(ready_tx);
-                if unsafe { lg_audio_init() } != 0 {
+                crate::horizon_diag("rust:audio-init:begin");
+                let init_result = unsafe { lg_audio_init() };
+                if init_result != 0 {
+                    crate::horizon_diag(&format!(
+                        "rust:audio-init:failed:code={init_result}"
+                    ));
                     worker_failed.store(true, Ordering::Release);
                     if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(false); }
                     return;
                 }
+                crate::horizon_diag("rust:audio-init:ready");
                 let _session = HorizonAudioSession {
                     failed: worker_failed.clone(),
                     closed: worker_closed,
@@ -653,6 +660,7 @@ impl HorizonAudio {
                 while !worker_stop.load(Ordering::Acquire) {
                     let free = unsafe { lg_audio_free_buffers() };
                     if free < 0 {
+                        crate::horizon_diag("rust:audio-buffer-query:failed");
                         failed_output = true;
                         break;
                     }
@@ -671,20 +679,29 @@ impl HorizonAudio {
                                 phase -= 1.0;
                             }
                         }
-                        if unsafe { lg_audio_submit(pcm.as_ptr(), 480) } != 0 {
+                        let submit_result = unsafe { lg_audio_submit(pcm.as_ptr(), 480) };
+                        if submit_result != 0 {
+                            crate::horizon_diag(&format!(
+                                "rust:audio-buffer-submit:failed:code={submit_result}"
+                            ));
                             failed_output = true;
                             break;
                         }
                         submitted += 1;
                         if submitted == 3 {
+                            crate::horizon_diag("rust:audio-worker:ready:initial-buffers=3");
                             if let Some(ready_tx) = ready_tx.take() { let _ = ready_tx.send(true); }
                         }
                     }
                     if failed_output { break; }
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                if failed_output { worker_failed.store(true, Ordering::Release); }
+                if failed_output {
+                    crate::horizon_diag("rust:audio-worker:output-failed");
+                    worker_failed.store(true, Ordering::Release);
+                }
                 if let Some(ready_tx) = ready_tx.take() {
+                    crate::horizon_diag("rust:audio-worker:exited-before-ready");
                     worker_failed.store(true, Ordering::Release);
                     let _ = ready_tx.send(false);
                 }

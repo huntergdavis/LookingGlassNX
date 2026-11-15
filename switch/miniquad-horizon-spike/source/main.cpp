@@ -102,14 +102,26 @@ static std::atomic<bool> g_audio_reserved{false};
 
 extern "C" int32_t lg_audio_init() {
     bool expected = false;
-    if (!g_audio_reserved.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return -1;
-    if (R_FAILED(audoutInitialize())) return -1;
-    if (audoutGetSampleRate() != 48000 || audoutGetChannelCount() != 2 ||
-        audoutGetPcmFormat() != PcmFormat_Int16) {
+    if (!g_audio_reserved.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        diag("audio:reservation:failed");
+        return -1;
+    }
+    diag("audio:audout-init:begin");
+    if (R_FAILED(audoutInitialize())) {
+        diag("audio:audout-init:failed");
+        return -1;
+    }
+    diag("audio:audout-init:ready");
+    const auto sample_rate = audoutGetSampleRate();
+    const auto channels = audoutGetChannelCount();
+    const auto pcm_format = audoutGetPcmFormat();
+    if (sample_rate != 48000 || channels != 2 || pcm_format != PcmFormat_Int16) {
+        diag("audio:audout-format:unsupported");
         audoutExit();
         g_audio_reserved.store(false, std::memory_order_release);
         return -1;
     }
+    diag("audio:audout-format:ready");
     for (auto& slot : g_audio) {
         slot.descriptor = {};
         slot.descriptor.buffer = slot.pcm;
@@ -161,8 +173,13 @@ extern "C" int32_t lg_audio_submit(const int16_t* samples, uint32_t frames) {
     selected->free = false;
     ++g_audio_queued;
     if (!g_audio_started && g_audio_queued >= 3) {
-        if (R_FAILED(audoutStartAudioOut())) return -1;
+        diag("audio:audout-start:begin");
+        if (R_FAILED(audoutStartAudioOut())) {
+            diag("audio:audout-start:failed");
+            return -1;
+        }
         g_audio_started = true;
+        diag("audio:audout-start:ready");
     }
     return 0;
 }

@@ -579,7 +579,20 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     let maps = assets.maps();
     #[cfg(target_os = "horizon")]
     crate::horizon_diag("rust:viewer-maps-enumeration-ready");
+    #[cfg(target_os = "horizon")]
+    crate::horizon_diag("rust:audio-new:begin");
     let mut audio = Audio::new(options.no_audio, options.audio_capture.clone());
+    #[cfg(target_os = "horizon")]
+    {
+        let status = if options.no_audio {
+            "disabled"
+        } else if audio.status == "Sound ready" {
+            "ready"
+        } else {
+            "unavailable"
+        };
+        crate::horizon_diag(&format!("rust:audio-new:ready:status={status}"));
+    }
     let mut opening_requested = options.new_game && options.map == "gvillage";
     let resume = if let Some(slot) = options.load {
         anyhow::ensure!(
