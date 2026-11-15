@@ -683,9 +683,11 @@ impl Drop for HorizonAudioSession {
 #[cfg(target_os = "horizon")]
 impl HorizonAudio {
     fn open(source: dynamic_mixer::DynamicMixer<f32>, data: Arc<MonitorData>, record: bool) -> Result<Self> {
+        crate::horizon_diag("rust:audio-open:reservation:begin");
         HORIZON_AUDIO_RESERVED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| anyhow!("Horizon audio worker is already active or retained"))?;
+        crate::horizon_diag("rust:audio-open:reservation:ready");
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(AtomicBool::new(false));
@@ -698,6 +700,7 @@ impl HorizonAudio {
         // logging cannot consume the two-second startup deadline or race logger
         // shutdown after a timed-out worker detaches.
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(8);
+        crate::horizon_diag("rust:audio-open:thread-spawn:begin");
         let worker = match std::thread::Builder::new()
             .name("lookingglass-audio".into())
             .spawn(move || {
@@ -775,14 +778,19 @@ impl HorizonAudio {
                     let _ = ready_tx.send(false);
                 }
             }) {
-                Ok(worker) => worker,
+            Ok(worker) => {
+                crate::horizon_diag("rust:audio-open:thread-spawn:ready");
+                worker
+            }
                 Err(error) => {
                     HORIZON_AUDIO_RESERVED.store(false, Ordering::Release);
                     return Err(error.into());
                 }
             };
+        crate::horizon_diag("rust:audio-open:readiness-wait:begin");
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
             Ok(true) => {
+                crate::horizon_diag("rust:audio-open:readiness-wait:ready");
                 report_horizon_audio_startup(&startup_rx);
                 Ok(Self {
                     stop,
@@ -795,6 +803,7 @@ impl HorizonAudio {
                 })
             }
             Ok(false) => {
+                crate::horizon_diag("rust:audio-open:readiness-wait:failed");
                 report_horizon_audio_startup(&startup_rx);
                 Err(anyhow!("libnx audout initialization/format check failed"))
             }
@@ -908,7 +917,11 @@ impl Playback {
 #[cfg(target_os = "horizon")]
 impl Playback {
     fn open(data: Arc<MonitorData>, record: bool) -> Result<Self> {
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-playback:mixer-create:begin");
         let (mixer, source) = dynamic_mixer::mixer(2, 44100);
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-playback:mixer-create:ready");
         Ok(Self { _audio: HorizonAudio::open(source, data, record)?, mixer })
     }
     fn sink(&self) -> Sink {
@@ -998,10 +1011,16 @@ pub struct Audio {
 }
 impl Audio {
     pub fn new(disabled: bool, capture: Option<PathBuf>) -> Self {
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-constructor:monitor-allocate:begin");
         let monitor = Arc::new(MonitorData::default());
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-constructor:monitor-allocate:ready");
         if capture.is_some() {
             monitor.samples.lock().unwrap().reserve(44100 * 2 * 30);
         }
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-constructor:playback-open:begin");
         let (playback, status) = if disabled {
             (None, "Sound disabled by launch option".into())
         } else {
@@ -1013,6 +1032,8 @@ impl Audio {
                 }
             }
         };
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-constructor:playback-open:ready");
         Self {
             playback,
             voice: None,
@@ -1036,9 +1057,16 @@ impl Audio {
             resolved: 0,
             clips: vec![None; 4],
             world_clips: BTreeMap::new(),
-            settings: std::fs::read_to_string(settings_path())
-                .map(|s| Settings::parse(&s))
-                .unwrap_or_default(),
+            settings: {
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag("rust:audio-constructor:settings-read:begin");
+                let settings = std::fs::read_to_string(settings_path())
+                    .map(|s| Settings::parse(&s))
+                    .unwrap_or_default();
+                #[cfg(target_os = "horizon")]
+                crate::horizon_diag("rust:audio-constructor:settings-read:ready");
+                settings
+            },
             status,
             fade_elapsed: 0.,
             stride: 0.,

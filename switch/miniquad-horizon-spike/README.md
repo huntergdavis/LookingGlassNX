@@ -38,6 +38,11 @@ service call's maximum chunk is not established by a device run.
 Startup diagnostics are written best-effort to the first unused
 `sdmc:/switch/alice-nx/startup-diagnostic-NNN.log` path (created with
 exclusive-create; earlier logs are never truncated). Each event is flushed.
+For the diagnostic build, creating the empty regular file
+`sdmc:/switch/alice-nx/diagnostic-no-audio` before launch selects no-audio
+startup mode. The selector persists across launches until manually removed;
+audio remains enabled by default when it is absent. This path selector is
+unverified on hardware.
 The trace records the C host stages, EGL errors, first missing GL function,
 Miniquad/Rust entry and callback stages, `GL_VERSION`, first frame/swap, and
 the no-data screen's first submitted draw. The host clears and swaps once

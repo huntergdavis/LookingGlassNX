@@ -13,6 +13,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <cstdlib>
 #include "sysconf_compat.h"
 
 static_assert(std::numeric_limits<EGLint>::max() == std::numeric_limits<int>::max(),
@@ -264,6 +266,29 @@ int main(int, char**) {
         }
         if (errno != EEXIST) break;
     }
+    struct stat diagnostic_mode_stat{};
+    errno = 0;
+    const int diagnostic_mode_stat_result = stat("sdmc:/switch/alice-nx/diagnostic-no-audio", &diagnostic_mode_stat);
+    const int diagnostic_mode_stat_error = errno;
+    const char* diagnostic_no_audio_state = "absent";
+    int diagnostic_mode_error = diagnostic_mode_stat_result == 0 ? 0 : diagnostic_mode_stat_error;
+    if (diagnostic_mode_stat_result == 0 && S_ISREG(diagnostic_mode_stat.st_mode)) {
+        diagnostic_no_audio_state = "setenv-failed";
+        if (::setenv("LOOKING_GLASS_DIAGNOSTIC_NO_AUDIO", "1", 1) == 0) {
+            diagnostic_no_audio_state = "enabled";
+        } else {
+            diagnostic_mode_error = errno;
+        }
+    } else if (diagnostic_mode_stat_result != 0 && diagnostic_mode_stat_error != ENOENT) {
+        diagnostic_no_audio_state = "stat-failed";
+    } else if (diagnostic_mode_stat_result == 0) {
+        diagnostic_no_audio_state = "not-regular-file";
+    }
+    char diagnostic_mode_event[96];
+    std::snprintf(diagnostic_mode_event, sizeof(diagnostic_mode_event),
+                  "diagnostic:no-audio-file=%s:errno=%d", diagnostic_no_audio_state,
+                  diagnostic_mode_error);
+    diag(diagnostic_mode_event);
     diag("main:entered");
     if (!lg_csrng_init()) { diag("exit:csrng-init-failed:10"); return 10; }
     diag("csrng:ready");

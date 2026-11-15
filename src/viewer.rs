@@ -581,10 +581,18 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     crate::horizon_diag("rust:viewer-maps-enumeration-ready");
     #[cfg(target_os = "horizon")]
     crate::horizon_diag("rust:audio-new:begin");
-    let mut audio = Audio::new(options.no_audio, options.audio_capture.clone());
+    #[cfg(target_os = "horizon")]
+    let no_audio = options.no_audio || std::env::var_os("LOOKING_GLASS_DIAGNOSTIC_NO_AUDIO").is_some();
+    #[cfg(not(target_os = "horizon"))]
+    let no_audio = options.no_audio;
+    #[cfg(target_os = "horizon")]
+    if no_audio && !options.no_audio {
+        crate::horizon_diag("rust:audio-diagnostic:no-audio-enabled");
+    }
+    let mut audio = Audio::new(no_audio, options.audio_capture.clone());
     #[cfg(target_os = "horizon")]
     {
-        let status = if options.no_audio {
+        let status = if no_audio {
             "disabled"
         } else if audio.status == "Sound ready" {
             "ready"
