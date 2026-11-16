@@ -18,6 +18,64 @@ thread_local! {
     static FLARE: RefCell<Option<Texture2D>> = const {RefCell::new(None)};
     static CROQUET: RefCell<Vec<Light>> = const {RefCell::new(Vec::new())};
 }
+// Horizon only: the shadow and flare textures live in process-wide Mutex slots instead of
+// thread_local RefCells. Logs 021-023 end at the first SHADOW access in load_art, so the
+// thread_local access is the suspected fault. Both slots are read and written on the one
+// game thread, so the values seen by load_art, shadow() and flares() are the same as before.
+#[cfg(target_os = "horizon")]
+static SHADOW_HORIZON: std::sync::Mutex<Option<Texture2D>> = std::sync::Mutex::new(None);
+#[cfg(target_os = "horizon")]
+static FLARE_HORIZON: std::sync::Mutex<Option<Texture2D>> = std::sync::Mutex::new(None);
+fn has_shadow() -> bool {
+    #[cfg(target_os = "horizon")]
+    {
+        SHADOW_HORIZON.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        SHADOW.with(|s| s.borrow().is_some())
+    }
+}
+fn shadow_texture() -> Option<Texture2D> {
+    #[cfg(target_os = "horizon")]
+    {
+        SHADOW_HORIZON.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        SHADOW.with(|s| s.borrow().clone())
+    }
+}
+fn flare_texture() -> Option<Texture2D> {
+    #[cfg(target_os = "horizon")]
+    {
+        FLARE_HORIZON.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        FLARE.with(|s| s.borrow().clone())
+    }
+}
+fn set_shadow(texture: Texture2D) {
+    #[cfg(target_os = "horizon")]
+    {
+        *SHADOW_HORIZON.lock().unwrap_or_else(|e| e.into_inner()) = Some(texture);
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        SHADOW.with(|s| *s.borrow_mut() = Some(texture));
+    }
+}
+fn set_flare(texture: Texture2D) {
+    #[cfg(target_os = "horizon")]
+    {
+        *FLARE_HORIZON.lock().unwrap_or_else(|e| e.into_inner()) = Some(texture);
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        FLARE.with(|s| *s.borrow_mut() = Some(texture));
+    }
+}
 pub fn select(mut lights: Vec<Light>, eye: Vec3, world: &World) {
     lights.retain(|l| {
         l.position.is_finite() && l.color.is_finite() && l.radius > 0. && l.radius <= 8192.
@@ -88,7 +146,7 @@ macro_rules! horizon_light_diag {
 pub fn load_art(assets: &mut Assets) -> Result<()> {
     horizon_light_diag!("rust:lighting:load-art-enter");
     horizon_light_diag!("rust:lighting:shadow-check-begin");
-    let shadow_loaded = SHADOW.with(|s| s.borrow().is_some());
+    let shadow_loaded = has_shadow();
     horizon_light_diag!("rust:lighting:shadow-check-ready:loaded={shadow_loaded}");
     if shadow_loaded {
         horizon_light_diag!("rust:lighting:load-art-already-loaded");
@@ -133,9 +191,9 @@ pub fn load_art(assets: &mut Assets) -> Result<()> {
                 horizon_light_diag!("rust:lighting:upload-ready:{name}");
                 t.set_filter(FilterMode::Linear);
                 if slot {
-                    FLARE.with(|s| *s.borrow_mut() = Some(t));
+                    set_flare(t);
                 } else {
-                    SHADOW.with(|s| *s.borrow_mut() = Some(t));
+                    set_shadow(t);
                 }
                 break;
             }
@@ -156,7 +214,7 @@ pub fn croquet(position: Vec3) -> Vec<Light> {
     })
 }
 pub fn shadow(world: &World, feet: Vec3, radius: f32) {
-    let Some(texture) = SHADOW.with(|s| s.borrow().clone()) else {
+    let Some(texture) = shadow_texture() else {
         return;
     };
     let hit = world.sweep(feet + Vec3::Z * 4., feet - Vec3::Z * 160., Vec3::ZERO);
@@ -214,7 +272,7 @@ pub fn shadow(world: &World, feet: Vec3, radius: f32) {
     );
 }
 pub fn flares(eye: Vec3, direction: Vec3) {
-    let Some(texture) = FLARE.with(|s| s.borrow().clone()) else {
+    let Some(texture) = flare_texture() else {
         return;
     };
     LIGHTS.with(|lights| {
