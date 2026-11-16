@@ -1880,7 +1880,12 @@ impl Menu {
                                 let display_changed = prefs.resolution != self.draft.resolution
                                     || prefs.fullscreen != self.draft.fullscreen;
                                 horizon_menu_diag!("rust:settings-apply:display-changed:{display_changed}");
-                                match self.draft.save().and_then(|_| self.draft_audio.save()) {
+                                horizon_menu_diag!("rust:settings-apply:draft-save-begin");
+                                let draft_saved = self.draft.save();
+                                horizon_menu_diag!("rust:settings-apply:draft-save-returned:ok={}", draft_saved.is_ok());
+                                let saved = draft_saved.and_then(|_| self.draft_audio.save());
+                                horizon_menu_diag!("rust:settings-apply:audio-save-returned:ok={}", saved.is_ok());
+                                match saved {
                                     Ok(()) => {
                                         horizon_menu_diag!("rust:settings-apply:save-ready");
                                         *prefs = self.draft.clone();
