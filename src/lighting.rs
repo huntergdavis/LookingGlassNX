@@ -78,23 +78,54 @@ pub fn apply(material: &Material, model: bool, enabled: bool) {
         }
     });
 }
+macro_rules! horizon_light_diag {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!($($arg)*));
+    }}
+}
+
 pub fn load_art(assets: &mut Assets) -> Result<()> {
     if SHADOW.with(|s| s.borrow().is_some()) {
         return Ok(());
     }
+    horizon_light_diag!("rust:lighting:load-art-begin");
+    horizon_light_diag!("rust:lighting:read-materials-begin");
     let specs = texture::read_materials(assets)?;
-    CROQUET.with(|s| {
-        *s.borrow_mut() =
-            crate::particles::declared_lights(assets, "croquetball").unwrap_or_default()
-    });
+    horizon_light_diag!("rust:lighting:read-materials-ready:count={}", specs.len());
+    horizon_light_diag!("rust:lighting:declared-lights-begin");
+    let lights = crate::particles::declared_lights(assets, "croquetball");
+    horizon_light_diag!(
+        "rust:lighting:declared-lights-ready:ok={}:count={}",
+        lights.is_ok(),
+        lights.as_ref().map_or(0, |l| l.len())
+    );
+    CROQUET.with(|s| *s.borrow_mut() = lights.unwrap_or_default());
     for (slot, names) in [
         (false, &["markshadow", "textures/common/shadow"] as &[&str]),
         (true, &["flare", "lensflare", "textures/sprites/flare"]),
     ] {
         for name in names {
-            if let Some(path) = texture::resolve(assets, name, &specs) {
-                let image = texture::decode(assets, &path)?;
+            horizon_light_diag!("rust:lighting:resolve-begin:{name}");
+            let resolved = texture::resolve(assets, name, &specs);
+            horizon_light_diag!("rust:lighting:resolve-ready:{name}:found={}", resolved.is_some());
+            if let Some(path) = resolved {
+                horizon_light_diag!("rust:lighting:decode-begin:{name}");
+                let image = match texture::decode(assets, &path) {
+                    Ok(image) => image,
+                    Err(e) => {
+                        horizon_light_diag!("rust:lighting:decode-failed:{name}");
+                        return Err(e);
+                    }
+                };
+                horizon_light_diag!(
+                    "rust:lighting:decode-ready:{name}:width={}:height={}:bytes={}",
+                    image.width,
+                    image.height,
+                    image.pixels.len()
+                );
                 let t = Texture2D::from_rgba8(image.width, image.height, &image.pixels);
+                horizon_light_diag!("rust:lighting:upload-ready:{name}");
                 t.set_filter(FilterMode::Linear);
                 if slot {
                     FLARE.with(|s| *s.borrow_mut() = Some(t));
@@ -105,6 +136,7 @@ pub fn load_art(assets: &mut Assets) -> Result<()> {
             }
         }
     }
+    horizon_light_diag!("rust:lighting:load-art-ready");
     Ok(())
 }
 pub fn croquet(position: Vec3) -> Vec<Light> {

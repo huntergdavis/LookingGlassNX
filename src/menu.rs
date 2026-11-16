@@ -1876,19 +1876,27 @@ impl Menu {
                                     as usize
                             }
                             Click::Apply => {
+                                horizon_menu_diag!("rust:settings-apply:begin");
                                 let display_changed = prefs.resolution != self.draft.resolution
                                     || prefs.fullscreen != self.draft.fullscreen;
+                                horizon_menu_diag!("rust:settings-apply:display-changed:{display_changed}");
                                 match self.draft.save().and_then(|_| self.draft_audio.save()) {
                                     Ok(()) => {
+                                        horizon_menu_diag!("rust:settings-apply:save-ready");
                                         *prefs = self.draft.clone();
                                         audio.settings = self.draft_audio;
                                         if display_changed {
+                                            horizon_menu_diag!("rust:settings-apply:display-begin");
                                             prefs.display();
+                                            horizon_menu_diag!("rust:settings-apply:display-ready");
                                         }
                                         self.open(Page::Settings, prefs, audio.settings);
+                                        horizon_menu_diag!("rust:settings-apply:reopen-ready");
                                         self.message = "Settings saved".into();
+                                        horizon_menu_diag!("rust:settings-apply:end");
                                     }
                                     Err(e) => {
+                                        horizon_menu_diag!("rust:settings-apply:save-failed");
                                         self.message = format!("Could not save settings: {e}")
                                     }
                                 }
