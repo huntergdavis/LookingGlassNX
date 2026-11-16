@@ -26,6 +26,31 @@ thread_local! {
 static SHADOW_HORIZON: std::sync::Mutex<Option<Texture2D>> = std::sync::Mutex::new(None);
 #[cfg(target_os = "horizon")]
 static FLARE_HORIZON: std::sync::Mutex<Option<Texture2D>> = std::sync::Mutex::new(None);
+// Horizon only: the declared croquet lights live in a process-wide Mutex, like the shadow slots.
+// Light is plain data (Vec3, f32, bool), so the Mutex is Send and Sync.
+#[cfg(target_os = "horizon")]
+static CROQUET_HORIZON: std::sync::Mutex<Vec<Light>> = std::sync::Mutex::new(Vec::new());
+fn set_croquet(lights: Vec<Light>) {
+    #[cfg(target_os = "horizon")]
+    {
+        *CROQUET_HORIZON.lock().unwrap_or_else(|e| e.into_inner()) = lights;
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        CROQUET.with(|s| *s.borrow_mut() = lights);
+    }
+}
+fn with_croquet<R>(f: impl FnOnce(&[Light]) -> R) -> R {
+    #[cfg(target_os = "horizon")]
+    {
+        let guard = CROQUET_HORIZON.lock().unwrap_or_else(|e| e.into_inner());
+        f(&guard)
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        CROQUET.with(|s| f(&s.borrow()))
+    }
+}
 fn has_shadow() -> bool {
     #[cfg(target_os = "horizon")]
     {
@@ -163,7 +188,7 @@ pub fn load_art(assets: &mut Assets) -> Result<()> {
         lights.is_ok(),
         lights.as_ref().map_or(0, |l| l.len())
     );
-    CROQUET.with(|s| *s.borrow_mut() = lights.unwrap_or_default());
+    set_croquet(lights.unwrap_or_default());
     for (slot, names) in [
         (false, &["markshadow", "textures/common/shadow"] as &[&str]),
         (true, &["flare", "lensflare", "textures/sprites/flare"]),
@@ -203,8 +228,8 @@ pub fn load_art(assets: &mut Assets) -> Result<()> {
     Ok(())
 }
 pub fn croquet(position: Vec3) -> Vec<Light> {
-    CROQUET.with(|s| {
-        s.borrow()
+    with_croquet(|lights| {
+        lights
             .iter()
             .map(|l| Light {
                 position: position + l.position,
