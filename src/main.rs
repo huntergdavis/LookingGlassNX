@@ -188,6 +188,9 @@ fn main() {
     }
 }
 
+// Build label for hardware logs. The save-fix candidate is build 1; this candidate is build 2.
+#[cfg(target_os = "horizon")]
+const BUILD_NUMBER: &str = "2";
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
@@ -195,6 +198,7 @@ pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
         extern "C" { fn lg_horizon_diag(event: *const std::ffi::c_char); }
         lg_horizon_diag(b"rust:panic\0".as_ptr().cast());
     }));
+    horizon_diag(&format!("rust:build:{}", BUILD_NUMBER));
     horizon_diag("rust:game-entry-entered");
     match run() {
         Ok(()) => { horizon_diag("rust:game-entry-accepted"); true },
