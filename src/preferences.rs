@@ -4,6 +4,13 @@ use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+macro_rules! horizon_pref_diag {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!($($arg)*));
+    }}
+}
+
 pub fn path(name: &str) -> PathBuf {
     std::env::var_os("LOOKING_GLASS_SETTINGS_DIR")
         .map(PathBuf::from)
@@ -194,10 +201,17 @@ impl Preferences {
         Ok(p)
     }
     pub fn save(&self) -> Result<()> {
+        horizon_pref_diag!("rust:prefs-save:begin");
         self.validate()?;
+        horizon_pref_diag!("rust:prefs-save:validate-ok");
         let path = path("preferences.json");
         std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        horizon_pref_diag!("rust:prefs-save:dir-ready");
+        horizon_pref_diag!("rust:prefs-save:serialise-begin");
+        let bytes = serde_json::to_vec_pretty(self)?;
+        horizon_pref_diag!("rust:prefs-save:serialise-ready:bytes={}", bytes.len());
+        std::fs::write(path, bytes)?;
+        horizon_pref_diag!("rust:prefs-save:write-ready");
         Ok(())
     }
     pub fn display(&self) {

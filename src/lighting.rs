@@ -87,7 +87,10 @@ macro_rules! horizon_light_diag {
 
 pub fn load_art(assets: &mut Assets) -> Result<()> {
     horizon_light_diag!("rust:lighting:load-art-enter");
-    if SHADOW.with(|s| s.borrow().is_some()) {
+    horizon_light_diag!("rust:lighting:shadow-check-begin");
+    let shadow_loaded = SHADOW.with(|s| s.borrow().is_some());
+    horizon_light_diag!("rust:lighting:shadow-check-ready:loaded={shadow_loaded}");
+    if shadow_loaded {
         horizon_light_diag!("rust:lighting:load-art-already-loaded");
         return Ok(());
     }
