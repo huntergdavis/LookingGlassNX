@@ -127,7 +127,7 @@ const EXTRA_EFFECTS: &[&str] = &[
     "sound/character/duchess/deathfall2.wav",
 ];
 fn settings_path() -> PathBuf {
-    crate::preferences::path("audio-settings.txt")
+    crate::preferences::settings_file("audio-settings.txt")
 }
 const MAX_PCM: usize = 8_000_000; // 32 MB per decoded effect, with a separate level cache budget.
 
@@ -168,6 +168,8 @@ impl Settings {
         s
     }
     pub fn save(self) -> Result<()> {
+        // Horizon: the SD settings folder already exists, so no create_dir_all there.
+        #[cfg(not(target_os = "horizon"))]
         std::fs::create_dir_all(settings_path().parent().unwrap())?;
         std::fs::write(
             settings_path(),

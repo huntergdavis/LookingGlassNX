@@ -17,6 +17,20 @@ pub fn path(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("private"))
         .join(name)
 }
+// Horizon only: preferences.json and audio-settings.txt use this fixed SD folder (owner choice).
+// Other callers of path() (co-op checkpoints, captures) are unchanged.
+#[cfg(target_os = "horizon")]
+pub const HORIZON_SETTINGS_DIR: &str = "sdmc:/switch/LookingGlassNX";
+pub fn settings_file(name: &str) -> PathBuf {
+    #[cfg(target_os = "horizon")]
+    {
+        PathBuf::from(HORIZON_SETTINGS_DIR).join(name)
+    }
+    #[cfg(not(target_os = "horizon"))]
+    {
+        path(name)
+    }
+}
 
 pub const SIZES: [(u32, u32); 9] = [
     (800, 600),
@@ -172,7 +186,7 @@ impl Preferences {
         Ok(())
     }
     pub fn load() -> Self {
-        std::fs::read(path("preferences.json"))
+        std::fs::read(settings_file("preferences.json"))
             .ok()
             .and_then(|b| Self::parse(&b).ok())
             .unwrap_or_default()
@@ -204,7 +218,9 @@ impl Preferences {
         horizon_pref_diag!("rust:prefs-save:begin");
         self.validate()?;
         horizon_pref_diag!("rust:prefs-save:validate-ok");
-        let path = path("preferences.json");
+        let path = settings_file("preferences.json");
+        // Horizon: the SD settings folder already exists, so no create_dir_all there.
+        #[cfg(not(target_os = "horizon"))]
         std::fs::create_dir_all(path.parent().unwrap())?;
         horizon_pref_diag!("rust:prefs-save:dir-ready");
         horizon_pref_diag!("rust:prefs-save:serialise-begin");
