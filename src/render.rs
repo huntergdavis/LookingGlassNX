@@ -1412,6 +1412,14 @@ impl Scene {
                     "rust:decor:surface:{placement_index}:frames-len={}",
                     surface.frames.len()
                 );
+                horizon_scene_diag!(
+                    "rust:decor:vertices-in:placement={placement_index}:surface={}:frame0-len={}:uv-len={}:indices-len={}:max-index={:?}",
+                    surface.name,
+                    surface.frames.first().map_or(0, |f| f.len()),
+                    surface.uv.len(),
+                    surface.indices.len(),
+                    surface.indices.iter().max()
+                );
                 let vertices = surface.frames[0]
                     .iter()
                     .zip(&surface.uv)
@@ -1423,8 +1431,28 @@ impl Scene {
                     })
                     .collect::<Vec<_>>();
                 let mut normals = vec![Vec3::ZERO; vertices.len()];
-                for tri in surface.indices.chunks_exact(3) {
+                horizon_scene_diag!(
+                    "rust:decor:normals-begin:placement={placement_index}:surface={}:vertices={}:normals={}",
+                    surface.name,
+                    vertices.len(),
+                    normals.len()
+                );
+                #[cfg(target_os = "horizon")]
+                let mut oob_logged = false;
+                #[cfg_attr(not(target_os = "horizon"), allow(unused_variables))]
+                for (tri_index, tri) in surface.indices.chunks_exact(3).enumerate() {
                     let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+                    #[cfg(target_os = "horizon")]
+                    {
+                        if !oob_logged && [a, b, c].iter().any(|&i| i >= vertices.len()) {
+                            oob_logged = true;
+                            crate::horizon_diag(&format!(
+                                "rust:decor:index-oob:placement={placement_index}:surface={}:triangle={tri_index}:indices={a},{b},{c}:vertices={}",
+                                surface.name,
+                                vertices.len()
+                            ));
+                        }
+                    }
                     let n = (vertices[b].position - vertices[a].position)
                         .cross(vertices[c].position - vertices[a].position);
                     for i in [a, b, c] {
