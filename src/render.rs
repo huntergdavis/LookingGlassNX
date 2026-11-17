@@ -309,7 +309,12 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
         if let Some(material) = cache.borrow().get(&index).and_then(Weak::upgrade) {
             return Ok(material);
         }
+        horizon_scene_diag!("rust:world-material:fragment-begin:index={index}");
         let fragment = crate::lighting::fragment(&crate::environment::fragment(FRAGMENT));
+        horizon_scene_diag!(
+            "rust:world-material:fragment-ready:index={index}:len={}",
+            fragment.len()
+        );
         let mut uniforms = vec![
             UniformDesc::new("AtlasGrid", UniformType::Float2),
             UniformDesc::new("Fullbright", UniformType::Float1),
@@ -325,6 +330,10 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             UniformDesc::new("FxAppearance", UniformType::Float4),
         ];
         uniforms.extend(crate::lighting::uniforms());
+        horizon_scene_diag!(
+            "rust:world-material:load-begin:index={index}:uniforms={}",
+            uniforms.len()
+        );
         uniforms.extend(crate::environment::uniforms());
         let material = Rc::new(
             load_material(
@@ -345,8 +354,13 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
                     textures: vec!["LightAtlas".into(), "SkyBackdrop".into()],
                 },
             )
-            .map_err(|e| anyhow::anyhow!("World shader: {e:?}"))?,
+            .map_err(|e| anyhow::anyhow!("World shader: {e:?}"))
+            .inspect_err(|e| {
+                horizon_scene_diag!("rust:world-material:load-failed:index={index}:{e:#}");
+                let _ = e;
+            })?,
         );
+        horizon_scene_diag!("rust:world-material:ok:index={index}");
         cache.borrow_mut().insert(index, Rc::downgrade(&material));
         Ok(material)
     })
@@ -1588,20 +1602,29 @@ impl Scene {
         horizon_scene_diag!("rust:decor:post-materials-begin");
         let mut materials = (0..BLEND_COUNT)
             .map(|i| {
-                world_material(
-                    if i < 9
-                        || batches
-                            .iter()
-                            .chain(&sky_props)
-                            .any(|b| b.layers.iter().any(|l| l.material % BLEND_COUNT == i))
-                    {
-                        i
-                    } else {
-                        0
-                    },
-                )
+                let index = if i < 9
+                    || batches
+                        .iter()
+                        .chain(&sky_props)
+                        .any(|b| b.layers.iter().any(|l| l.material % BLEND_COUNT == i))
+                {
+                    i
+                } else {
+                    0
+                };
+                horizon_scene_diag!("rust:post-materials:index={i}:call={index}:begin");
+                let result = world_material(index);
+                horizon_scene_diag!(
+                    "rust:post-materials:index={i}:call={index}:{}",
+                    if result.is_ok() { "ok" } else { "err" }
+                );
+                result
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()
+            .inspect_err(|e| {
+                horizon_scene_diag!("rust:post-materials:error:{e:#}");
+                let _ = e;
+            })?;
         horizon_scene_diag!("rust:decor:post-materials-ready:count={}", materials.len());
         for i in BLEND_COUNT..BLEND_COUNT * 2 {
             // Equal-depth variants only consume slots if an actual layer uses one.
@@ -1611,7 +1634,11 @@ impl Scene {
                     .chain(&sky_props)
                     .any(|b| b.layers.iter().any(|l| l.material == i))
                 {
-                    world_material(i)?
+                    horizon_scene_diag!("rust:post-materials-second:index={i}:begin");
+                    world_material(i).inspect_err(|e| {
+                        horizon_scene_diag!("rust:post-materials-second:index={i}:error:{e:#}");
+                        let _ = e;
+                    })?
                 } else {
                     materials[i % BLEND_COUNT].clone()
                 },
