@@ -304,9 +304,31 @@ thread_local! {
     // Weak entries release GPU resources when the last scene goes away.
     static WORLD_MATERIALS: RefCell<BTreeMap<usize, Weak<Material>>> = RefCell::default();
 }
+// Horizon only. world_material also runs every frame, so the lookup-trace markers are
+// gated on this flag, which the scene-load post-materials pass sets and clears.
+#[cfg(target_os = "horizon")]
+static WORLD_MATERIAL_TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+macro_rules! horizon_wm_trace {
+    ($($arg:tt)*) => {{
+        #[cfg(target_os = "horizon")]
+        if WORLD_MATERIAL_TRACE.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::horizon_diag(&format!($($arg)*));
+        }
+    }}
+}
+macro_rules! horizon_wm_trace_set {
+    ($value:expr) => {{
+        #[cfg(target_os = "horizon")]
+        WORLD_MATERIAL_TRACE.store($value, std::sync::atomic::Ordering::Relaxed);
+    }}
+}
 pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
+    horizon_wm_trace!("rust:world-material:entry:index={index}");
     WORLD_MATERIALS.with(|cache| {
-        if let Some(material) = cache.borrow().get(&index).and_then(Weak::upgrade) {
+        horizon_wm_trace!("rust:world-material:tls-ready:index={index}");
+        let hit = cache.borrow().get(&index).and_then(Weak::upgrade);
+        horizon_wm_trace!("rust:world-material:lookup:index={index}:hit={}", hit.is_some());
+        if let Some(material) = hit {
             return Ok(material);
         }
         horizon_scene_diag!("rust:world-material:fragment-begin:index={index}");
@@ -1600,6 +1622,7 @@ impl Scene {
             })
             .count();
         horizon_scene_diag!("rust:decor:post-materials-begin");
+        horizon_wm_trace_set!(true);
         let mut materials = (0..BLEND_COUNT)
             .map(|i| {
                 let index = if i < 9
@@ -1622,6 +1645,7 @@ impl Scene {
             })
             .collect::<Result<Vec<_>>>()
             .inspect_err(|e| {
+                horizon_wm_trace_set!(false);
                 horizon_scene_diag!("rust:post-materials:error:{e:#}");
                 let _ = e;
             })?;
@@ -1636,6 +1660,7 @@ impl Scene {
                 {
                     horizon_scene_diag!("rust:post-materials-second:index={i}:begin");
                     world_material(i).inspect_err(|e| {
+                        horizon_wm_trace_set!(false);
                         horizon_scene_diag!("rust:post-materials-second:index={i}:error:{e:#}");
                         let _ = e;
                     })?
@@ -1644,6 +1669,7 @@ impl Scene {
                 },
             );
         }
+        horizon_wm_trace_set!(false);
         let mut bound_materials = Vec::new();
         for material in &materials {
             if !bound_materials.iter().any(|m| Rc::ptr_eq(m, material)) {
