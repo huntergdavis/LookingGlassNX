@@ -316,24 +316,30 @@ macro_rules! horizon_wm_trace {
         }
     }}
 }
+// Horizon only. The first BYPASS_LIMIT world_material calls inside a scene-load window
+// skip the thread-local cache; the counter is reset each time the window opens.
+#[cfg(target_os = "horizon")]
+static WORLD_MATERIAL_BYPASS_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(target_os = "horizon")]
+const WORLD_MATERIAL_BYPASS_LIMIT: u32 = 4;
 macro_rules! horizon_wm_trace_set {
     ($value:expr) => {{
         #[cfg(target_os = "horizon")]
-        WORLD_MATERIAL_TRACE.store($value, std::sync::atomic::Ordering::Relaxed);
+        {
+            WORLD_MATERIAL_TRACE.store($value, std::sync::atomic::Ordering::Relaxed);
+            WORLD_MATERIAL_BYPASS_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
     }}
 }
 pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
     horizon_wm_trace!("rust:world-material:entry:index={index}");
-    WORLD_MATERIALS.with(|cache| {
-        horizon_wm_trace!("rust:world-material:tls-ready:index={index}");
-        let hit = cache.borrow().get(&index).and_then(Weak::upgrade);
-        horizon_wm_trace!("rust:world-material:lookup:index={index}:hit={}", hit.is_some());
-        if let Some(material) = hit {
+    let build = |cache: &RefCell<BTreeMap<usize, Weak<Material>>>| -> Result<Rc<Material>> {
+        if let Some(material) = cache.borrow().get(&index).and_then(Weak::upgrade) {
             return Ok(material);
         }
-        horizon_scene_diag!("rust:world-material:fragment-begin:index={index}");
+        horizon_wm_trace!("rust:world-material:fragment-begin:index={index}");
         let fragment = crate::lighting::fragment(&crate::environment::fragment(FRAGMENT));
-        horizon_scene_diag!(
+        horizon_wm_trace!(
             "rust:world-material:fragment-ready:index={index}:len={}",
             fragment.len()
         );
@@ -352,7 +358,7 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             UniformDesc::new("FxAppearance", UniformType::Float4),
         ];
         uniforms.extend(crate::lighting::uniforms());
-        horizon_scene_diag!(
+        horizon_wm_trace!(
             "rust:world-material:load-begin:index={index}:uniforms={}",
             uniforms.len()
         );
@@ -378,14 +384,26 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             )
             .map_err(|e| anyhow::anyhow!("World shader: {e:?}"))
             .inspect_err(|e| {
-                horizon_scene_diag!("rust:world-material:load-failed:index={index}:{e:#}");
+                horizon_wm_trace!("rust:world-material:load-failed:index={index}:{e:#}");
                 let _ = e;
             })?,
         );
-        horizon_scene_diag!("rust:world-material:ok:index={index}");
+        horizon_wm_trace!("rust:world-material:ok:index={index}");
         cache.borrow_mut().insert(index, Rc::downgrade(&material));
         Ok(material)
-    })
+    };
+    // Horizon: inside a scene-load window only the first few calls bypass the thread-local
+    // cache, building into a throwaway local cache. Every other call uses the original path.
+    #[cfg(target_os = "horizon")]
+    {
+        let bypass = WORLD_MATERIAL_TRACE.load(std::sync::atomic::Ordering::Relaxed)
+            && WORLD_MATERIAL_BYPASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                < WORLD_MATERIAL_BYPASS_LIMIT;
+        if bypass {
+            return build(&RefCell::new(BTreeMap::new()));
+        }
+    }
+    return WORLD_MATERIALS.with(build);
 }
 #[allow(clippy::too_many_arguments)]
 fn load_layers(
