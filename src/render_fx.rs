@@ -22,7 +22,7 @@ pub struct Appearance {
 }
 pub struct Pass {
     pub mesh: Mesh,
-    pub material: Rc<Material>,
+    pub material: std::sync::Arc<Material>,
     pub lit: bool,
     pub clamp: bool,
     pub cutout: f32,
@@ -48,7 +48,7 @@ struct Frame {
     groups: Vec<Group>,
     vertices: usize,
     dropped: usize,
-    retained: Vec<(Rc<Material>, Option<Texture2D>)>,
+    retained: Vec<(std::sync::Arc<Material>, Option<Texture2D>)>,
     projection: Option<Mat4>,
 }
 thread_local! {
@@ -122,7 +122,7 @@ pub fn begin_view(camera: &Camera3D, time: f32, atmosphere: &Atmosphere, fullbri
     set_projection(camera.matrix());
 }
 fn same_style(a: &Pass, b: &Pass) -> bool {
-    Rc::ptr_eq(&a.material, &b.material)
+    std::sync::Arc::ptr_eq(&a.material, &b.material)
         && a.mesh.texture.as_ref().map(Texture2D::raw_miniquad_id)
             == b.mesh.texture.as_ref().map(Texture2D::raw_miniquad_id)
         && a.lit == b.lit

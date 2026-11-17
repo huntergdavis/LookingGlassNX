@@ -14,11 +14,7 @@ use macroquad::{
     },
     prelude::*,
 };
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    rc::{Rc, Weak},
-};
+use std::collections::BTreeMap;
 
 mod billboard_check;
 mod sky_face_check;
@@ -117,8 +113,8 @@ pub struct Scene {
     pub atmosphere: Atmosphere,
     batches: Vec<Batch>,
     decoration_start: usize,
-    materials: Vec<Rc<Material>>,
-    bound_materials: Vec<Rc<Material>>,
+    materials: Vec<std::sync::Arc<Material>>,
+    bound_materials: Vec<std::sync::Arc<Material>>,
     atlas: Texture2D,
     atlas_grid: Vec2,
     pub missing: Vec<String>,
@@ -298,12 +294,12 @@ fn blend(i: usize) -> Option<BlendState> {
     };
     Some(BlendState::new(Equation::Add, s, d))
 }
-thread_local! {
-    // Macroquad has only 32 simultaneous pipeline slots. Save restoration and
-    // map transitions keep two scenes alive; share immutable pipeline definitions.
-    // Weak entries release GPU resources when the last scene goes away.
-    static WORLD_MATERIALS: RefCell<BTreeMap<usize, Weak<Material>>> = RefCell::default();
-}
+// Macroquad has only 32 simultaneous pipeline slots. Save restoration and
+// map transitions keep two scenes alive; share immutable pipeline definitions.
+// Weak entries release GPU resources when the last scene goes away. Process-wide, so the
+// shared handles are Arc.
+static WORLD_MATERIALS: std::sync::Mutex<BTreeMap<usize, std::sync::Weak<Material>>> =
+    std::sync::Mutex::new(BTreeMap::new());
 // Horizon only. world_material also runs every frame, so the lookup-trace markers are
 // gated on this flag, which the scene-load post-materials pass sets and clears.
 #[cfg(target_os = "horizon")]
@@ -331,10 +327,15 @@ macro_rules! horizon_wm_trace_set {
         }
     }}
 }
-pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
+pub(crate) fn world_material(index: usize) -> Result<std::sync::Arc<Material>> {
     horizon_wm_trace!("rust:world-material:entry:index={index}");
-    let build = |cache: &RefCell<BTreeMap<usize, Weak<Material>>>| -> Result<Rc<Material>> {
-        if let Some(material) = cache.borrow().get(&index).and_then(Weak::upgrade) {
+    let build = |cache: &std::sync::Mutex<BTreeMap<usize, std::sync::Weak<Material>>>| -> Result<std::sync::Arc<Material>> {
+        let cached = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(material) = cached {
             return Ok(material);
         }
         horizon_wm_trace!("rust:world-material:fragment-begin:index={index}");
@@ -363,7 +364,7 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             uniforms.len()
         );
         uniforms.extend(crate::environment::uniforms());
-        let material = Rc::new(
+        let material = std::sync::Arc::new(
             load_material(
                 ShaderSource::Glsl {
                     vertex: VERTEX,
@@ -389,7 +390,10 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             })?,
         );
         horizon_wm_trace!("rust:world-material:ok:index={index}");
-        cache.borrow_mut().insert(index, Rc::downgrade(&material));
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, std::sync::Arc::downgrade(&material));
         Ok(material)
     };
     // Horizon: inside a scene-load window only the first few calls bypass the thread-local
@@ -400,10 +404,10 @@ pub(crate) fn world_material(index: usize) -> Result<Rc<Material>> {
             && WORLD_MATERIAL_BYPASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 < WORLD_MATERIAL_BYPASS_LIMIT;
         if bypass {
-            return build(&RefCell::new(BTreeMap::new()));
+            return build(&std::sync::Mutex::new(BTreeMap::new()));
         }
     }
-    return WORLD_MATERIALS.with(build);
+    return build(&WORLD_MATERIALS);
 }
 #[allow(clippy::too_many_arguments)]
 fn load_layers(
@@ -558,7 +562,7 @@ fn axial_billboard(quad: &mut [Vertex], camera: Vec3) {
 #[allow(clippy::too_many_arguments)]
 fn draw_batch(
     batch: &mut Batch,
-    materials: &[Rc<Material>],
+    materials: &[std::sync::Arc<Material>],
     camera: Vec3,
     time: f32,
     transform: Option<&(usize, Vec3, Quat)>,
@@ -1690,7 +1694,7 @@ impl Scene {
         horizon_wm_trace_set!(false);
         let mut bound_materials = Vec::new();
         for material in &materials {
-            if !bound_materials.iter().any(|m| Rc::ptr_eq(m, material)) {
+            if !bound_materials.iter().any(|m| std::sync::Arc::ptr_eq(m, material)) {
                 bound_materials.push(material.clone());
             }
         }
