@@ -1349,15 +1349,38 @@ impl Scene {
             decorations.placements.len()
         );
         println!("Decorations {name}: {} placements, {} baked duplicates avoided, {} scripted props deferred", decorations.placements.len(), decorations.baked, decorations.deferred.len());
-        for placement in &decorations.placements {
+        #[cfg_attr(not(target_os = "horizon"), allow(unused_variables))]
+        for (placement_index, placement) in decorations.placements.iter().enumerate() {
             let def = &placement.model.def;
+            horizon_scene_diag!(
+                "rust:decor:placement:{placement_index}:name={}:def-path={}",
+                placement.name,
+                def.path
+            );
             for surface in &placement.model.surfaces {
-                let skin = def
+                let skin_direct = def.skins.get(&surface.name).is_some();
+                #[cfg_attr(not(target_os = "horizon"), allow(unused_variables))]
+                let skin_all_fallback = !skin_direct && def.skins.contains_key("all");
+                horizon_scene_diag!(
+                    "rust:decor:surface:{placement_index}:name={}:skin-direct={skin_direct}:all-fallback={skin_all_fallback}",
+                    surface.name
+                );
+                let skin_source = match def
                     .skins
                     .get(&surface.name)
                     .or_else(|| def.skins.get("all"))
-                    .context("Environmental model surface skin missing")?
-                    .to_ascii_lowercase();
+                    .context("Environmental model surface skin missing")
+                {
+                    Ok(skin) => skin,
+                    Err(e) => {
+                        horizon_scene_diag!(
+                            "rust:decor:error:skin:placement={placement_index}:surface={}:{e:#}",
+                            surface.name
+                        );
+                        return Err(e);
+                    }
+                };
+                let skin = skin_source.to_ascii_lowercase();
                 let name = if specs.contains_key(&skin) {
                     skin
                 } else {
@@ -1366,7 +1389,7 @@ impl Scene {
                 let spec = specs
                     .get(&name.to_lowercase())
                     .or_else(|| specs.get(name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s)));
-                let layers = load_layers(
+                let layers = match load_layers(
                     assets,
                     &name,
                     spec,
@@ -1375,7 +1398,20 @@ impl Scene {
                     &fallback,
                     &white,
                     &mut missing,
-                )?;
+                ) {
+                    Ok(layers) => layers,
+                    Err(e) => {
+                        horizon_scene_diag!(
+                            "rust:decor:error:layers:placement={placement_index}:surface={}:{e:#}",
+                            surface.name
+                        );
+                        return Err(e);
+                    }
+                };
+                horizon_scene_diag!(
+                    "rust:decor:surface:{placement_index}:frames-len={}",
+                    surface.frames.len()
+                );
                 let vertices = surface.frames[0]
                     .iter()
                     .zip(&surface.uv)

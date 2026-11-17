@@ -189,9 +189,9 @@ fn main() {
 }
 
 // Build label for hardware logs. The save-fix candidate is build 1; the a3f1c8d build is build 2;
-// this candidate is build 3.
+// build 3 is a7a7f5f/0808e3c; this candidate is build 4.
 #[cfg(target_os = "horizon")]
-const BUILD_NUMBER: &str = "3";
+const BUILD_NUMBER: &str = "4";
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
