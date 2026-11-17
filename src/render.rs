@@ -1480,57 +1480,75 @@ impl Scene {
                     "rust:decor:entity-lookup-ready:placement={placement_index}:entity={}",
                     placement.entity
                 );
+                // Same field expressions in the same order as the struct literal they replace.
+                let face_side = if placement.sky {
+                    spec.map_or(crate::materials::FaceSide::Front, |s| s.face_side)
+                } else {
+                    crate::materials::FaceSide::Both
+                };
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:face-side-ready");
+                let motion = entity_props
+                    .get("targetname")
+                    .and_then(|n| sky_motions.get(n))
+                    .cloned();
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:motion-ready");
+                let full_indices = surface.indices.clone();
+                let bounds = surface
+                    .frames
+                    .iter()
+                    .flatten()
+                    .map(|p| placement.point(*p))
+                    .fold(
+                        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                        |(a, b), p| (a.min(p), b.max(p)),
+                    );
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:bounds-ready");
+                let detail = surface
+                    .detail
+                    .iter()
+                    .map(|l| crate::model_detail::Level {
+                        indices: l.indices.clone(),
+                        error: l.error * placement.scale,
+                    })
+                    .collect();
+                let animation = (surface.frames.len() > 1).then(|| {
+                    crate::ambient_animation::Frames {
+                        positions: surface.frames.clone(),
+                        frame_time: placement.model.frame_time,
+                        transform: placement.pose,
+                        scale: placement.scale,
+                    }
+                });
+                let center = placement.pose.translation;
+                let base = vertices.clone();
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:detail-animation-center-base-ready");
+                let mesh = Mesh {
+                    vertices,
+                    indices: surface.indices.clone(),
+                    texture: None,
+                };
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:mesh-ready");
+                let deforms = spec.map(|s| s.deforms.clone()).unwrap_or_default();
+                horizon_scene_diag!("rust:decor:batch-field:placement={placement_index}:deforms-ready");
                 let batch = Batch {
-                    face_side: if placement.sky {
-                        spec.map_or(crate::materials::FaceSide::Front, |s| s.face_side)
-                    } else {
-                        crate::materials::FaceSide::Both
-                    },
-                    motion: entity_props
-                        .get("targetname")
-                        .and_then(|n| sky_motions.get(n))
-                        .cloned(),
-                    full_indices: surface.indices.clone(),
+                    face_side,
+                    motion,
+                    full_indices,
                     parts: Vec::new(),
-                    bounds: surface
-                        .frames
-                        .iter()
-                        .flatten()
-                        .map(|p| placement.point(*p))
-                        .fold(
-                            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
-                            |(a, b), p| (a.min(p), b.max(p)),
-                        ),
-                    detail: surface
-                        .detail
-                        .iter()
-                        .map(|l| crate::model_detail::Level {
-                            indices: l.indices.clone(),
-                            error: l.error * placement.scale,
-                        })
-                        .collect(),
-                    animation: (surface.frames.len() > 1).then(|| {
-                        crate::ambient_animation::Frames {
-                            positions: surface.frames.clone(),
-                            frame_time: placement.model.frame_time,
-                            transform: placement.pose,
-                            scale: placement.scale,
-                        }
-                    }),
-                    center: placement.pose.translation,
-                    base: vertices.clone(),
+                    bounds,
+                    detail,
+                    animation,
+                    center,
+                    base,
                     normals,
-                    mesh: Mesh {
-                        vertices,
-                        indices: surface.indices.clone(),
-                        texture: None,
-                    },
+                    mesh,
                     layers,
-                    deforms: spec.map(|s| s.deforms.clone()).unwrap_or_default(),
+                    deforms,
                     sky: false,
                     portal: false,
                     model: placement.parent,
                 };
+                horizon_scene_diag!("rust:decor:batch-built:placement={placement_index}");
                 if placement.sky && sky_origin.is_some() {
                     sky_props.push(batch);
                 } else {
@@ -1538,6 +1556,12 @@ impl Scene {
                 }
             }
         }
+        horizon_scene_diag!(
+            "rust:decor:placements-loop-exit:batches={}:sky-props={}",
+            batches.len(),
+            sky_props.len()
+        );
+        horizon_scene_diag!("rust:decor:post-pass-begin");
         for batch in &mut batches {
             batch.full_indices = batch.mesh.indices.clone();
             if batch.animation.is_none() {
@@ -1561,6 +1585,7 @@ impl Scene {
                     .any(|l| l.spec.images.len() > 1 || !l.spec.mods.is_empty())
             })
             .count();
+        horizon_scene_diag!("rust:decor:post-materials-begin");
         let mut materials = (0..BLEND_COUNT)
             .map(|i| {
                 world_material(
@@ -1577,6 +1602,7 @@ impl Scene {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        horizon_scene_diag!("rust:decor:post-materials-ready:count={}", materials.len());
         for i in BLEND_COUNT..BLEND_COUNT * 2 {
             // Equal-depth variants only consume slots if an actual layer uses one.
             materials.push(

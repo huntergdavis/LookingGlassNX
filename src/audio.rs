@@ -1439,6 +1439,19 @@ impl Audio {
                 "sound/weapon/staff/liftoff.wav" | "sound/weapon/staff/explode1.wav" => 0.5,
                 _ => 1.,
             };
+        #[cfg(target_os = "horizon")]
+        {
+            static QUEUE_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if QUEUE_DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 200 {
+                crate::horizon_diag(&format!(
+                    "rust:audio-queue:path={path}:volume={volume}:origin={}:playback={}:pending={}:accepted={}",
+                    origin.is_some(),
+                    self.playback.is_some(),
+                    self.pending.len(),
+                    self.playback.is_some() && self.pending.len() < 128 && !path.is_empty()
+                ));
+            }
+        }
         if self.playback.is_some() && self.pending.len() < 128 && !path.is_empty() {
             self.pending.push(Request {
                 path: path.replace('\\', "/").to_lowercase(),
@@ -1548,6 +1561,18 @@ impl Audio {
         self.loops(assets, loops);
     }
     pub fn loops(&mut self, assets: &mut Assets, cues: Vec<LoopCue>) {
+        #[cfg(target_os = "horizon")]
+        {
+            static LOOPS_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if LOOPS_DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 100 {
+                crate::horizon_diag(&format!(
+                    "rust:audio-loops:cues={}:existing={}:playback={}",
+                    cues.len(),
+                    self.loops.len(),
+                    self.playback.is_some()
+                ));
+            }
+        }
         self.loops
             .retain(|id, l| cues.iter().any(|c| c.id == *id && c.path == l.path));
         let Some(playback) = &self.playback else {
@@ -1687,6 +1712,12 @@ impl Audio {
         }
     }
     fn mood(&mut self, assets: &mut Assets, name: &str) -> Result<()> {
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!(
+            "rust:audio-mood:enter:name={name}:cues={}:playback={}",
+            self.cues.len(),
+            self.playback.is_some()
+        ));
         let Some(cue) = self.cues.get(name).cloned() else {
             return Ok(());
         };
@@ -1710,6 +1741,11 @@ impl Audio {
         }
         self.retire_music();
         self.fade_elapsed = 0.;
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!(
+            "rust:audio-mood:queued:name={name}:path={}:volume={}:loop={}",
+            cue.path, cue.volume, cue.looping
+        ));
         println!(
             "Music {name}: {} (loop={}, fade={}s)",
             cue.path, cue.looping, cue.fade
@@ -1738,6 +1774,13 @@ impl Audio {
     }
     /// Menu cues use the existing output/mixer but continue while gameplay is paused.
     pub fn menu_sound(&self, bytes: Arc<[u8]>) -> Result<Option<Sink>> {
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag(&format!(
+            "rust:audio-menu-sound:bytes={}:playback={}:muted={}",
+            bytes.len(),
+            self.playback.is_some(),
+            self.settings.muted
+        ));
         let Some(playback) = &self.playback else {
             return Ok(None);
         };
@@ -1748,6 +1791,8 @@ impl Audio {
             self.settings.effects
         });
         sink.append(Decoder::new(Cursor::new(bytes))?);
+        #[cfg(target_os = "horizon")]
+        crate::horizon_diag("rust:audio-menu-sound:sink-created");
         Ok(Some(sink))
     }
     pub fn speak_from(&mut self, assets: &mut Assets, path: &str, seconds: f32) {
