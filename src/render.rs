@@ -1462,13 +1462,31 @@ impl Scene {
                 for n in &mut normals {
                     *n = n.normalize_or_zero();
                 }
+                horizon_scene_diag!(
+                    "rust:decor:normals-done:placement={placement_index}:surface={}",
+                    surface.name
+                );
+                horizon_scene_diag!(
+                    "rust:decor:batch-begin:placement={placement_index}:surface={}",
+                    surface.name
+                );
+                horizon_scene_diag!(
+                    "rust:decor:entity-lookup-begin:placement={placement_index}:entity={}:entities-len={}",
+                    placement.entity,
+                    map.entities.len()
+                );
+                let entity_props = &map.entities[placement.entity];
+                horizon_scene_diag!(
+                    "rust:decor:entity-lookup-ready:placement={placement_index}:entity={}",
+                    placement.entity
+                );
                 let batch = Batch {
                     face_side: if placement.sky {
                         spec.map_or(crate::materials::FaceSide::Front, |s| s.face_side)
                     } else {
                         crate::materials::FaceSide::Both
                     },
-                    motion: map.entities[placement.entity]
+                    motion: entity_props
                         .get("targetname")
                         .and_then(|n| sky_motions.get(n))
                         .cloned(),
