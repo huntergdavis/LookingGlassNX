@@ -268,28 +268,46 @@ pub struct Art {
 }
 impl Art {
     pub fn load(assets: &mut crate::assets::Assets) -> Result<Self> {
-        let specs = crate::texture::read_materials(assets)?;
+        let specs = horizon_try!(
+            crate::texture::read_materials(assets),
+            "powerups::Art::load:materials"
+        );
         let mut props = Vec::new();
         for model in [Kind::Rage.model(), Kind::Tea.model(), Kind::Glass.model()] {
-            props.push(crate::weapons::Prop::load_animation(
-                assets, model, "idle", &specs,
-            )?);
+            props.push(horizon_try!(
+                crate::weapons::Prop::load_animation(assets, model, "idle", &specs),
+                &format!("powerups::Art::load:power-prop:{model}")
+            ));
         }
         Ok(Self {
             props,
             resources: ["p_h1", "p_h2", "p_m1", "p_m2"]
                 .iter()
-                .map(|name| crate::weapons::Prop::load_animation(assets, name, "idle", &specs))
+                .map(|name| {
+                    Ok(horizon_try!(
+                        crate::weapons::Prop::load_animation(assets, name, "idle", &specs),
+                        &format!("powerups::Art::load:resource-prop:{name}")
+                    ))
+                })
                 .collect::<Result<_>>()?,
-            material: crate::character::skin_material()?,
-            essence: crate::loot_art::Art::load(assets, &specs)?,
+            material: horizon_try!(
+                crate::character::skin_material(),
+                "powerups::Art::load:skin-material"
+            ),
+            essence: horizon_try!(
+                crate::loot_art::Art::load(assets, &specs),
+                "powerups::Art::load:loot-art"
+            ),
             collection_fx: ["p_h1", "p_h2", "p_m1", "p_m2"]
                 .into_iter()
                 .chain(crate::loot_art::GRADES.iter().map(|g| g.model()))
                 .map(|name| {
                     Ok((
                         name.into(),
-                        crate::pickup_effects::Effect::load(assets, name, "pickup", &specs)?,
+                        horizon_try!(
+                            crate::pickup_effects::Effect::load(assets, name, "pickup", &specs),
+                            &format!("powerups::Art::load:pickup-effect:{name}")
+                        ),
                     ))
                 })
                 .collect::<Result<_>>()?,

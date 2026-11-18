@@ -196,7 +196,7 @@ fn main() {
 // build 10 is 472b930/509da92; build 11 is 7ab6fc5 (trace, label 0d92951);
 // build 12 is 9ddf8d5 (trace, frame window); this candidate is build 13 (post-ready steps).
 #[cfg(target_os = "horizon")]
-const BUILD_NUMBER: &str = "13";
+const BUILD_NUMBER: &str = "13b";
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {

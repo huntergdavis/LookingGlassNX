@@ -161,15 +161,16 @@ macro_rules! horizon_trace_error {
 /// same error (converted with From, as `?` does). Off, it is exactly `expr?`.
 #[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
 macro_rules! horizon_try {
-    ($e:expr, $label:literal) => {{
-        crate::horizon_trace::imp::try_begin($label);
+    ($e:expr, $label:expr) => {{
+        let label = $label;
+        crate::horizon_trace::imp::try_begin(label);
         match $e {
             Ok(value) => {
-                crate::horizon_trace::imp::try_ok($label);
+                crate::horizon_trace::imp::try_ok(label);
                 value
             }
             Err(err) => {
-                crate::horizon_trace::imp::try_err($label, &err);
+                crate::horizon_trace::imp::try_err(label, &err);
                 return Err(From::from(err));
             }
         }
@@ -178,7 +179,7 @@ macro_rules! horizon_try {
 
 #[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
 macro_rules! horizon_try {
-    ($e:expr, $label:literal) => {
+    ($e:expr, $label:expr) => {
         $e?
     };
 }

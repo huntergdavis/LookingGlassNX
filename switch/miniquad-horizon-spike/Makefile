@@ -38,9 +38,9 @@ include $(DEVKITPRO)/libnx/switch_rules
 #   NACP building is skipped as well.
 #---------------------------------------------------------------------------------
 TARGET		:=	$(notdir $(CURDIR))
-APP_TITLE	:= LookingGlassNX build 12
+APP_TITLE	:= LookingGlassNX build 13b
 APP_AUTHOR	:= Looking GlassNX contributors
-APP_VERSION	:= 12
+APP_VERSION	:= 13b
 ICON		:= icon.jpg
 BUILD		:=	build
 SOURCES		:=	source
