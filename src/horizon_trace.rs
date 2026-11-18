@@ -26,6 +26,12 @@ pub(crate) mod imp {
         PER_CALL.store(0, Relaxed);
     }
 
+    /// Start a new trace window at each New Game, so the frame count starts there, not at boot.
+    pub(crate) fn reset_window() {
+        FRAME.store(0, Relaxed);
+        PER_CALL.store(0, Relaxed);
+    }
+
     fn in_window() -> bool {
         FRAME.load(Relaxed) <= FRAME_LIMIT
     }
@@ -85,6 +91,18 @@ macro_rules! horizon_trace_frame {
     () => {
         crate::horizon_trace::imp::tick_frame();
     };
+}
+
+#[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
+macro_rules! horizon_trace_new_game {
+    () => {
+        crate::horizon_trace::imp::reset_window();
+    };
+}
+
+#[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+macro_rules! horizon_trace_new_game {
+    () => {};
 }
 
 #[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]

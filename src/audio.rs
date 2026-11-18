@@ -1083,6 +1083,7 @@ impl Audio {
         }
     }
     pub fn load(&mut self, assets: &mut Assets, name: &str, map: &Bsp) {
+        horizon_trace_scope!("audio::Audio::load");
         self.stop_voice();
         self.retire_music();
         self.world_sounds = world::State::default();
@@ -1112,6 +1113,7 @@ impl Audio {
         }
     }
     fn load_inner(&mut self, assets: &mut Assets, name: &str, map: &Bsp) -> Result<()> {
+        horizon_trace_scope!("audio::Audio::load_inner");
         let spec = level_spec(assets, name, map)?;
         let mut failures = 0;
         self.cues = spec.music;

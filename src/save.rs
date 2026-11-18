@@ -125,6 +125,7 @@ impl Level {
     }
 }
 pub fn validate_entry(map: &Bsp, entry: Option<&str>) -> Result<()> {
+    horizon_trace_scope!("save::validate_entry");
     if let Some(entry) = entry {
         ensure!(
             map.entities.iter().any(|e| e

@@ -264,6 +264,7 @@ pub async fn play(
     preferences: &Preferences,
     name: &str,
 ) -> Result<bool> {
+    horizon_trace_scope!("movie::play");
     ensure!(matches!(name, "opening" | "ending"), "Unknown story movie");
     let mut video = Video::new(assets.read(&format!("video/{name}.roq"))?)?;
     video.next()?;

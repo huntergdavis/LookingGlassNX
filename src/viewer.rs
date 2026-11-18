@@ -36,6 +36,7 @@ fn load_scene(
     name: &str,
     difficulty: crate::powerups::Difficulty,
 ) -> Result<Scene> {
+    horizon_trace_scope!("viewer::load_scene");
     Scene::load_for(assets, name, difficulty)
 }
 struct Entered {
@@ -271,6 +272,7 @@ fn enter_level(
     options: &Options,
     play_entry: bool,
 ) -> Result<Entered> {
+    horizon_trace_scope!("viewer::enter_level");
     let loaded =
         crate::campaign::load_visit(assets, name, entry, cached, options.difficulty, play_entry)?;
     finish_entered(assets, loaded, name, entry, cached, options)
@@ -285,6 +287,7 @@ fn finish_entered(
     cached: Option<&Level>,
     options: &Options,
 ) -> Result<Entered> {
+    horizon_trace_scope!("viewer::finish_entered");
     let crate::campaign::Loaded {
         map,
         world,
@@ -1120,6 +1123,7 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
             true
         } else { false };
         if let Some(difficulty) = new_game_requested.take() {
+            horizon_trace_new_game!();
             match crate::movie::play(
                 &mut assets,
                 &mut audio,

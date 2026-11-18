@@ -249,6 +249,7 @@ pub fn load_visit(
     difficulty: Difficulty,
     play_entry: bool,
 ) -> Result<Loaded> {
+    horizon_trace_scope!("campaign::load_visit");
     let mut map = Bsp::parse(&assets.read(&format!("maps/{name}.bsp"))?)
         .with_context(|| format!("Loading {name}"))?;
     map.difficulty = difficulty;
@@ -317,6 +318,7 @@ pub fn arrive(
     exit: &Exit,
     strict: bool,
 ) -> Result<NextVisit> {
+    horizon_trace_scope!("campaign::arrive");
     let (name, entry) = (exit.0.as_str(), exit.1.as_deref());
     let key = save::visit_key(name, entry);
     let cached = ledger.levels.get(&key).cloned();

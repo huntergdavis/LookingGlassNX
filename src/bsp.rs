@@ -104,6 +104,7 @@ fn bounded(first: usize, size: usize, total: usize) -> Result<std::ops::Range<us
 
 impl Bsp {
     pub fn parse(b: &[u8]) -> Result<Self> {
+        horizon_trace_call!("bsp::Bsp::parse");
         ensure!(b.len() >= 172, "Truncated FAKK BSP header");
         ensure!(&b[..4] == b"FAKK", "Expected an Alice FAKK BSP");
         ensure!(

@@ -462,6 +462,7 @@ pub struct World {
 
 impl World {
     pub fn from_bsp(map: &Bsp) -> Result<Self> {
+        horizon_trace_call!("collision::World::from_bsp");
         Self::from_bsp_mask(map, PLAYER_MASK)
     }
     /// Scripted actors use solid and monster-clip, not Alice's player-only clips.
