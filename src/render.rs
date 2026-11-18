@@ -328,6 +328,7 @@ macro_rules! horizon_wm_trace_set {
     }}
 }
 pub(crate) fn world_material(index: usize) -> Result<std::sync::Arc<Material>> {
+    horizon_trace_call!("render::world_material");
     horizon_wm_trace!("rust:world-material:entry:index={index}");
     let build = |cache: &std::sync::Mutex<BTreeMap<usize, std::sync::Weak<Material>>>| -> Result<std::sync::Arc<Material>> {
         let cached = cache
@@ -1056,6 +1057,7 @@ impl Scene {
         transforms: &[(usize, Vec3, Quat)],
         particles: &crate::particles::Steam,
     ) {
+        horizon_trace_scope!("render::Scene::draw_with_particles");
         self.bind_atlas();
         let cluster = self.map.visibility.cluster(camera, &self.map.planes);
         let mut context = DrawContext {
@@ -1771,6 +1773,7 @@ impl Scene {
         transparent: bool,
         transforms: &[(usize, Vec3, Quat)],
     ) {
+        horizon_trace_scope!("render::Scene::draw");
         let _profile = crate::frame_profile::span("world_draw");
         self.bind_atlas();
         if !transparent {
@@ -1973,6 +1976,7 @@ pub fn depth_pipeline(color_blend: Option<BlendState>) -> PipelineParams {
 /// Run only after every world draw/effect has flushed. Keep colour, give the local
 /// first-person toy its own depth layer, then draw only the 2-D HUD afterwards.
 pub fn clear_view_depth() {
+    horizon_trace_scope!("render::clear_view_depth");
     unsafe {
         get_internal_gl().flush();
         macroquad::miniquad::gl::glDepthMask(1);

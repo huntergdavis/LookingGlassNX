@@ -95,6 +95,7 @@ pub fn appearance(a: Appearance) {
     FRAME.with(|f| f.borrow_mut().appearance = a);
 }
 pub fn begin(camera: Vec3, direction: Vec3, time: f32, atmosphere: &Atmosphere, fullbright: bool) {
+    horizon_trace_scope!("render_fx::begin");
     unsafe {
         get_internal_gl().flush();
     }
@@ -111,6 +112,7 @@ pub fn begin(camera: Vec3, direction: Vec3, time: f32, atmosphere: &Atmosphere, 
     });
 }
 pub fn begin_view(camera: &Camera3D, time: f32, atmosphere: &Atmosphere, fullbright: bool) {
+    horizon_trace_scope!("render_fx::begin_view");
     use macroquad::camera::Camera;
     begin(
         camera.position,
@@ -207,6 +209,7 @@ pub fn submit(passes: Vec<Pass>, transparent: bool) {
     });
 }
 pub fn finish() -> (usize, usize) {
+    horizon_trace_scope!("render_fx::finish");
     let (groups, camera, direction, dropped, projection) = FRAME.with(|f| {
         let mut f = f.borrow_mut();
         (
@@ -339,6 +342,7 @@ fn pass_at(
     appearance: Appearance,
     clock: f32,
 ) -> Result<Pass> {
+    horizon_trace_call!("render_fx::pass_at");
     let rgb = stage.constant_rgb.unwrap_or(Vec3::ONE)
         * stage
             .rgb

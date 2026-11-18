@@ -189,6 +189,8 @@ impl LevelArt {
         camera: Vec3,
         fullbright: bool,
     ) {
+        horizon_trace_frame!();
+        horizon_trace_scope!("viewer::draw");
         if let (Some(a), Some(f)) = (&mut self.fortress, &i.fortress) {
             a.draw(f, atmosphere, camera, fullbright);
         }
