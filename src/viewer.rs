@@ -37,6 +37,7 @@ fn load_scene(
     difficulty: crate::powerups::Difficulty,
 ) -> Result<Scene> {
     horizon_trace_scope!("viewer::load_scene");
+    horizon_trace_load_budget!();
     Scene::load_for(assets, name, difficulty)
 }
 struct Entered {
@@ -273,6 +274,7 @@ fn enter_level(
     play_entry: bool,
 ) -> Result<Entered> {
     horizon_trace_scope!("viewer::enter_level");
+    horizon_trace_load_budget!();
     let loaded =
         crate::campaign::load_visit(assets, name, entry, cached, options.difficulty, play_entry)?;
     finish_entered(assets, loaded, name, entry, cached, options)
