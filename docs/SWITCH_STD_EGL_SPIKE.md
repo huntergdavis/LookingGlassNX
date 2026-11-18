@@ -84,6 +84,12 @@ docker run --rm -u "$(id -u):$(id -g)" \
   sh -lc 'export DEVKITPRO=/opt/devkitpro PATH=/opt/devkitpro/devkitA64/bin:/opt/devkitpro/tools/bin:/usr/bin:/bin; make -j4'
 ```
 
+That is the release recipe. A diagnostic build (`--features horizon-trace` on the cargo side)
+must also pass `LG_STDERR_TO_LOG=1` to `make` and delete `build/` first, since `make` does not
+track `CFLAGS` and a stale `build/main.o` yields a release-shaped NRO. Confirm with
+`readelf -s miniquad-horizon-spike.elf | grep -w dup2`; a release NRO has no `dup2`, so an empty
+result means stderr was not redirected and the runtime's own allocation message will be lost.
+
 The installed toolchain and builder image in the original workspace are local
 validation infrastructure, not project downloads. The Switch NRO has not been
 run on hardware. Blue output, A-button color change, Plus exit, cleanup,

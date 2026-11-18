@@ -30,11 +30,22 @@ impl Art {
         let mut layers = Vec::new();
         let mut textures = BTreeMap::<String, Texture2D>::new();
         let direct = BTreeMap::new();
+        horizon_heap_mark!("loot-art:enter");
         for (i, grade) in GRADES.into_iter().enumerate() {
-            props.push(horizon_try!(
-                crate::weapons::Prop::load_animation(assets, grade.model(), "idle", &direct),
-                &format!("loot_art::Art::load:prop:{}", grade.model())
-            ));
+            horizon_step_mark!("loot-art:grade", i);
+            horizon_heap_mark!("loot-art:prop-begin");
+            horizon_prop_trace!(true);
+            // A closure keeps PROP_TRACE off on the error path: horizon_try! returns from the
+            // closure, never from load(), so the flag is always cleared here.
+            let prop = (|| -> Result<_> {
+                Ok(horizon_try!(
+                    crate::weapons::Prop::load_animation(assets, grade.model(), "idle", &direct),
+                    &format!("loot_art::Art::load:prop:{}", grade.model())
+                ))
+            })();
+            horizon_prop_trace!(false);
+            props.push(prop?);
+            horizon_heap_mark!("loot-art:prop-done");
             let shader = format!("models/weapons/metaessence/skin{:02}", 4 - i);
             let stages = &horizon_try!(
                 specs.get(&shader).context("Missing Meta Essence material"),
@@ -67,6 +78,7 @@ impl Art {
                     let tex = Texture2D::from_rgba8(image.width, image.height, &image.pixels);
                     tex.set_filter(FilterMode::Linear);
                     horizon_trace_mark!("rust:loot-art:texture-upload:ok");
+                    horizon_heap_mark!("loot-art:texture-done");
                     textures.insert(path.clone(), tex);
                 }
                 grade_layers.push(Layer {
@@ -76,22 +88,29 @@ impl Art {
             }
             layers.push(grade_layers);
         }
+        horizon_heap_mark!("loot-art:layers-done");
+        horizon_heap_mark!("loot-art:effects-begin");
+        let effects = GRADES
+            .iter()
+            .map(|g| {
+                Ok(horizon_try!(
+                    crate::pickup_effects::Effect::load(assets, g.model(), "idle", specs),
+                    &format!("loot_art::Art::load:idle-effect:{}", g.model())
+                ))
+            })
+            .collect::<Result<_>>()?;
+        horizon_heap_mark!("loot-art:effects-done");
+        horizon_heap_mark!("loot-art:materials-begin");
+        let materials = [
+            horizon_try!(material(false), "loot_art::Art::load:material:add"),
+            horizon_try!(material(true), "loot_art::Art::load:material:filter"),
+        ];
+        horizon_heap_mark!("loot-art:exit");
         Ok(Self {
             props,
             layers,
-            effects: GRADES
-                .iter()
-                .map(|g| {
-                    Ok(horizon_try!(
-                        crate::pickup_effects::Effect::load(assets, g.model(), "idle", specs),
-                        &format!("loot_art::Art::load:idle-effect:{}", g.model())
-                    ))
-                })
-                .collect::<Result<_>>()?,
-            materials: [
-                horizon_try!(material(false), "loot_art::Art::load:material:add"),
-                horizon_try!(material(true), "loot_art::Art::load:material:filter"),
-            ],
+            effects,
+            materials,
         })
     }
     pub fn draw(

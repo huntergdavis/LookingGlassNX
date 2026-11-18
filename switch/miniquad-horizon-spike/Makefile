@@ -56,6 +56,13 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
 			$(ARCH) $(DEFINES)
 
+# Diagnostic builds pass LG_STDERR_TO_LOG=1, which points stderr at the diagnostic file so the
+# Rust runtime's own allocation or stack message lands in the log. Release builds do not pass
+# it, so their compiler flags, and their bytes, are unchanged.
+ifeq ($(LG_STDERR_TO_LOG),1)
+CFLAGS	+=	-DLG_STDERR_TO_LOG
+endif
+
 CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 CXXFLAGS	+=	-I$(DEVKITPRO)/portlibs/switch/include
 

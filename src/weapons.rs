@@ -858,6 +858,8 @@ impl Prop {
     ) -> Result<Self> {
         let mut meshes = Vec::new();
         let mut material_layers = Vec::new();
+        // Only loot art turns this on, so the rest of the level load stays as quiet as before.
+        let prop_trace = horizon_prop_tracing!();
         for s in &model.surfaces {
             let skin = def
                 .skins
@@ -867,15 +869,29 @@ impl Prop {
             let path = texture::resolve(assets, &format!("{}/{skin}", def.path), specs)
                 .or_else(|| texture::resolve(assets, skin, specs))
                 .with_context(|| format!("Weapon texture {skin}"))?;
+            if prop_trace {
+                horizon_trace_mark!("rust:prop:decode-begin");
+            }
             let image = texture::decode(assets, &path)?;
+            if prop_trace {
+                horizon_trace_mark!("rust:prop:decode-ok");
+            }
             let tex = Texture2D::from_rgba8(image.width, image.height, &image.pixels);
             tex.set_filter(FilterMode::Linear);
+            if prop_trace {
+                horizon_trace_mark!("rust:prop:upload-ok");
+                horizon_heap_mark!("prop:upload");
+            }
             material_layers.push(crate::render_fx::register(
                 assets,
                 &tex,
                 &[format!("{}/{skin}", def.path), skin.clone()],
                 specs,
             )?);
+            if prop_trace {
+                horizon_trace_mark!("rust:prop:register-ok");
+                horizon_heap_mark!("prop:register");
+            }
             meshes.push(Mesh {
                 vertices: s
                     .uv

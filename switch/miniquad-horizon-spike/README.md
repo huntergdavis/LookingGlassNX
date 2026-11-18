@@ -124,6 +124,28 @@ Run commands from this directory so Cargo discovers `.cargo/config.toml`:
 cargo check --manifest-path ../../Cargo.toml --lib --no-default-features --locked --offline
 cargo build --manifest-path ../../Cargo.toml --lib --release --no-default-features --locked --offline
 docker run --rm -v "$(pwd)/../..:/work" -w /work local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587 make -C /work/switch/miniquad-horizon-spike
+```
+
+Diagnostic (horizon-trace) builds add two things to that recipe, and both are easy to lose:
+
+- build the Rust half with `--features horizon-trace`, or the markers vanish while the
+  `rust:build:N` label still claims otherwise;
+- pass `LG_STDERR_TO_LOG=1` to `make`, after deleting `build/`: `make` does not track `CFLAGS`,
+  so a stale `build/main.o` silently produces a release-shaped NRO.
+
+```sh
+rm -rf build
+cargo build --manifest-path ../../Cargo.toml --lib --release --no-default-features --features horizon-trace --locked --offline
+docker run --rm -v "$(pwd)/../..:/work" -w /work local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587 make -C /work/switch/miniquad-horizon-spike LG_STDERR_TO_LOG=1
+readelf -s switch/miniquad-horizon-spike/miniquad-horizon-spike.elf | grep -w dup2   # must be non-empty
+```
+
+The `dup2` check is what proves the define reached the C++ compile: release NROs have no `dup2`,
+so an empty result means the stderr redirect, and the whole point of that build, is missing.
+
+Host-side checks (from this directory, after the block above):
+
+```sh
 mkdir -p target/host
 rustc --edition=2018 --test ../../vendor/miniquad/src/native/horizon_pad.rs -o target/host/horizon-pad-tests
 target/host/horizon-pad-tests

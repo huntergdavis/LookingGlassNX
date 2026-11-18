@@ -78,6 +78,89 @@ pub(crate) mod imp {
         emit(msg);
     }
 
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    fn push(buf: &mut [u8; 160], n: &mut usize, bytes: &[u8]) {
+        for &b in bytes {
+            if *n + 1 < buf.len() {
+                buf[*n] = b;
+                *n += 1;
+            }
+        }
+    }
+
+    /// Log a marker with one numeric payload, built without touching the allocator.
+    ///
+    /// `format!` and `CString::new` both allocate, so a mark emitted through `emit` can be lost
+    /// exactly when the heap is what failed. This one formats into a stack buffer and hands the
+    /// NUL-terminated bytes straight to the C shim, so it still reports at the limit.
+    pub(crate) fn mark_num(prefix: &str, label: &str, value: u64) {
+        let mut buf = [0u8; 160];
+        let mut n = 0usize;
+        push(&mut buf, &mut n, b"rust:");
+        push(&mut buf, &mut n, prefix.as_bytes());
+        push(&mut buf, &mut n, b":");
+        push(&mut buf, &mut n, label.as_bytes());
+        push(&mut buf, &mut n, b":");
+        let mut digits = [0u8; 16];
+        let mut d = 0usize;
+        let mut v = value;
+        loop {
+            digits[d] = HEX[(v & 0xf) as usize];
+            d += 1;
+            v >>= 4;
+            if v == 0 {
+                break;
+            }
+        }
+        push(&mut buf, &mut n, b"0x");
+        while d > 0 {
+            d -= 1;
+            push(&mut buf, &mut n, &digits[d..d + 1]);
+        }
+        buf[n] = 0;
+        let len = (n + 1) as u64;
+        let used = TRACE_BYTES.fetch_add(len, Relaxed);
+        if used + len > BYTE_BUDGET {
+            if !BUDGET_HIT.swap(true, Relaxed) {
+                crate::horizon_diag("rust:trace:budget-exhausted");
+            }
+            return;
+        }
+        unsafe {
+            extern "C" {
+                fn lg_horizon_diag(event: *const std::ffi::c_char);
+            }
+            lg_horizon_diag(buf.as_ptr().cast());
+        };
+    }
+
+    /// Heap break address from newlib (`_sbrk_r` with `incr = 0` is a pure read).
+    ///
+    /// The signal is the growth between marks, not the absolute value. `sbrk` and `_sbrk` are
+    /// not linked on this target, so this asks `_sbrk_r`, which is the allocator actually in use.
+    pub(crate) fn heap_now() -> u64 {
+        unsafe {
+            extern "C" {
+                static _impure_ptr: *mut core::ffi::c_void;
+                fn _sbrk_r(reent: *mut core::ffi::c_void, incr: isize) -> *mut core::ffi::c_void;
+            }
+            _sbrk_r(_impure_ptr, 0) as usize as u64
+        }
+    }
+
+    /// While set, prop building logs its own internals, so the loot-art prop pair stops being
+    /// one opaque step. Only loot art sets it, so other prop loads stay quiet.
+    static PROP_TRACE: AtomicBool = AtomicBool::new(false);
+
+    pub(crate) fn set_prop_trace(on: bool) {
+        PROP_TRACE.store(on, Relaxed);
+    }
+
+    pub(crate) fn prop_trace() -> bool {
+        PROP_TRACE.load(Relaxed)
+    }
+
     /// Log an error with its full anyhow chain (`{:#}`) under a name.
     pub(crate) fn error<E: std::fmt::Display + ?Sized>(name: &str, e: &E) {
         emit(&format!("rust:trace:error:{name}:{e:#}"));
@@ -144,8 +227,71 @@ macro_rules! horizon_trace_error {
 }
 
 #[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+#[allow(unused_macros)]
 macro_rules! horizon_trace_mark {
     ($msg:literal) => {};
+}
+
+/// Heap watermark straight from `_sbrk(0)`, logged without allocating.
+#[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
+macro_rules! horizon_heap_mark {
+    ($label:literal) => {
+        crate::horizon_trace::imp::mark_num("heap", $label, crate::horizon_trace::imp::heap_now());
+    };
+}
+
+#[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+#[allow(unused_macros)]
+macro_rules! horizon_heap_mark {
+    ($label:literal) => {};
+}
+
+/// `horizon_step_mark!("label", index)` names which item a loop is on, without allocating.
+#[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
+macro_rules! horizon_step_mark {
+    ($label:literal, $value:expr) => {
+        crate::horizon_trace::imp::mark_num("step", $label, $value as u64);
+    };
+}
+
+#[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+#[allow(unused_macros)]
+macro_rules! horizon_step_mark {
+    ($label:literal, $value:expr) => {{
+        let _ = $value;
+    }};
+}
+
+/// Turn prop-internal logging on or off.
+#[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
+macro_rules! horizon_prop_trace {
+    ($on:expr) => {
+        crate::horizon_trace::imp::set_prop_trace($on);
+    };
+}
+
+#[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+#[allow(unused_macros)]
+macro_rules! horizon_prop_trace {
+    ($on:expr) => {{
+        let _ = $on;
+    }};
+}
+
+/// Whether prop-internal logging is currently on. Constant `false` when tracing is off.
+#[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
+macro_rules! horizon_prop_tracing {
+    () => {
+        crate::horizon_trace::imp::prop_trace()
+    };
+}
+
+#[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]
+#[allow(unused_macros)]
+macro_rules! horizon_prop_tracing {
+    () => {
+        false
+    };
 }
 
 #[cfg(not(all(feature = "horizon-trace", target_os = "horizon")))]

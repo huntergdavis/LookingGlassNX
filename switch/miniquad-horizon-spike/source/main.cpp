@@ -262,6 +262,22 @@ int main(int, char**) {
         if (fd >= 0) {
             g_diag = fdopen(fd, "w");
             if (!g_diag) close(fd);
+#ifdef LG_STDERR_TO_LOG
+            // The Rust runtime reports allocation failure and stack overflow on stderr, not
+            // through our markers. Point stderr at the same file so that message is kept, and
+            // record whether the redirect actually took: if devoptab refuses dup, the whole
+            // reason for this build fails silently otherwise.
+            if (g_diag) {
+                std::fflush(g_diag);
+                if (dup2(fileno(g_diag), STDERR_FILENO) < 0) {
+                    char note[64];
+                    std::snprintf(note, sizeof note, "rust:stderr-dup2:failed:errno=%d", errno);
+                    diag(note);
+                } else {
+                    diag("rust:stderr-dup2:ok");
+                }
+            }
+#endif
             break;
         }
         if (errno != EEXIST) break;
