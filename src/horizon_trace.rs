@@ -26,11 +26,6 @@ pub(crate) mod imp {
         PER_CALL.store(0, Relaxed);
     }
 
-    /// Give a level load its own per-call budget; loads run inside one frame iteration.
-    pub(crate) fn reset_per_call() {
-        PER_CALL.store(0, Relaxed);
-    }
-
     /// Start a new trace window at each New Game, so the frame count starts there, not at boot.
     pub(crate) fn reset_window() {
         FRAME.store(0, Relaxed);
@@ -101,7 +96,7 @@ macro_rules! horizon_trace_frame {
 #[cfg(all(feature = "horizon-trace", target_os = "horizon"))]
 macro_rules! horizon_trace_load_budget {
     () => {
-        crate::horizon_trace::imp::reset_per_call();
+        crate::horizon_trace::imp::reset_window();
     };
 }
 
