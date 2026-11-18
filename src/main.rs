@@ -194,9 +194,9 @@ fn main() {
 // build 3 is a7a7f5f/0808e3c; build 4 is 89607b9; build 5 is 0efbccd; build 6 is ceb0433/5b90ce3;
 // build 7 is af77a79/44c95ba; build 8 is 9fa9d3e/d70d286; build 9 is ac70c12/66cdaba;
 // build 10 is 472b930/509da92; build 11 is 7ab6fc5 (trace, label 0d92951);
-// this candidate is build 12 (trace only, first 300 frames).
+// build 12 is 9ddf8d5 (trace, frame window); this candidate is build 13 (post-ready steps).
 #[cfg(target_os = "horizon")]
-const BUILD_NUMBER: &str = "12";
+const BUILD_NUMBER: &str = "13";
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
@@ -210,6 +210,7 @@ pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
         Ok(()) => { horizon_diag("rust:game-entry-accepted"); true },
         Err(error) => {
             eprintln!("Looking GlassNX: {error:#}");
+            horizon_trace_error!("main::run", error);
             horizon_diag("rust:game-entry-returned-error");
             false
         }

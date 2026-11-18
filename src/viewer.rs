@@ -663,36 +663,66 @@ pub async fn run(mut assets: Assets, mut options: Options) -> Result<()> {
     crate::horizon_diag(&format!("rust:world-load:ready:map={}", maps[current]));
     let mut level_art = LevelArt::default();
     let mut skip_scene = crate::cinematic::Skip::default();
-    let mut power_art = crate::powerups::Art::load(&mut assets)?;
-    let mut hints = crate::cheshire::Hints::load(&mut assets, &scene.map, &maps[current])?;
+    let mut power_art = horizon_try!(
+        crate::powerups::Art::load(&mut assets),
+        "powerups::Art::load"
+    );
+    let mut hints = horizon_try!(
+        crate::cheshire::Hints::load(&mut assets, &scene.map, &maps[current]),
+        "cheshire::Hints::load"
+    );
+    horizon_trace_mark!("rust:viewer-step:begin:console::Console::new");
     let mut console = crate::console::Console::new();
-    let mut steam = crate::particles::Steam::load(&mut assets, &scene.map)?;
-    let mut interactions = Interactions::load(&scene.map)?;
-    interactions.set_entry(
-        &mut assets,
-        &scene.map,
-        &maps[current],
-        options.entry.as_deref(),
-    )?;
+    horizon_trace_mark!("rust:viewer-step:end:console::Console::new");
+    let mut steam = horizon_try!(
+        crate::particles::Steam::load(&mut assets, &scene.map),
+        "particles::Steam::load"
+    );
+    let mut interactions = horizon_try!(
+        Interactions::load(&scene.map),
+        "Interactions::load"
+    );
+    horizon_try!(
+        interactions.set_entry(
+            &mut assets,
+            &scene.map,
+            &maps[current],
+            options.entry.as_deref(),
+        ),
+        "interactions.set_entry"
+    );
     if options.npc_preview || options.combat_preview || options.larva_preview {
         interactions.encounters = None;
     }
+    horizon_trace_mark!("rust:viewer-step:begin:interactions.sync");
     interactions.sync(&mut scene.world);
-    save::validate_entry(&scene.map, options.entry.as_deref())?;
+    horizon_trace_mark!("rust:viewer-step:end:interactions.sync");
+    horizon_try!(
+        save::validate_entry(&scene.map, options.entry.as_deref()),
+        "save::validate_entry"
+    );
     let mut entry_spawn = options.entry.clone();
-    let mut npcs = crate::npc::Npcs::load(
-        &mut assets,
-        &scene.map,
-        &maps[current],
-        entry_spawn.as_deref(),
-        options.npc_preview,
-        options.combat_preview,
-    )?;
+    let mut npcs = horizon_try!(
+        crate::npc::Npcs::load(
+            &mut assets,
+            &scene.map,
+            &maps[current],
+            entry_spawn.as_deref(),
+            options.npc_preview,
+            options.combat_preview,
+        ),
+        "npc::Npcs::load"
+    );
     if options.larva_preview && maps[current] == "centipede1" {
-        npcs = crate::npc::Npcs::larva_preview(&mut assets)?;
+        npcs = horizon_try!(
+            crate::npc::Npcs::larva_preview(&mut assets),
+            "npc::Npcs::larva_preview"
+        );
     }
-    let catalog = Catalog::load(&mut assets)?;
+    let catalog = horizon_try!(Catalog::load(&mut assets), "inventory::Catalog::load");
+    horizon_trace_mark!("rust:viewer-step:begin:starting_stats");
     let mut stats = starting_stats(&options, &maps[current], entry_spawn.as_deref());
+    horizon_trace_mark!("rust:viewer-step:end:starting_stats");
     println!(
         "Level loadout {}: {}",
         maps[current],
