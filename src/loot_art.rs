@@ -31,17 +31,16 @@ impl Art {
         let mut textures = BTreeMap::<String, Texture2D>::new();
         let direct = BTreeMap::new();
         for (i, grade) in GRADES.into_iter().enumerate() {
-            props.push(crate::weapons::Prop::load_animation(
-                assets,
-                grade.model(),
-                "idle",
-                &direct,
-            )?);
+            props.push(horizon_try!(
+                crate::weapons::Prop::load_animation(assets, grade.model(), "idle", &direct),
+                &format!("loot_art::Art::load:prop:{}", grade.model())
+            ));
             let shader = format!("models/weapons/metaessence/skin{:02}", 4 - i);
-            let stages = &specs
-                .get(&shader)
-                .context("Missing Meta Essence material")?
-                .stages;
+            let stages = &horizon_try!(
+                specs.get(&shader).context("Missing Meta Essence material"),
+                &format!("loot_art::Art::load:material-spec:{shader}")
+            )
+            .stages;
             ensure!(
                 stages.len() == 3
                     && stages
@@ -55,12 +54,19 @@ impl Art {
                 let name = stage.images.first().context("Missing Meta Essence image")?;
                 // Stage images are literal assets, not shader aliases. Resolving
                 // skin02.tga through the shader again selects ref.tga instead.
-                let path = texture::resolve(assets, name, &direct)
-                    .context("Missing Meta Essence texture")?;
+                let path = horizon_try!(
+                    texture::resolve(assets, name, &direct).context("Missing Meta Essence texture"),
+                    &format!("loot_art::Art::load:resolve:{name}")
+                );
                 if !textures.contains_key(&path) {
-                    let image = texture::decode(assets, &path)?;
+                    let image = horizon_try!(
+                        texture::decode(assets, &path),
+                        &format!("loot_art::Art::load:decode:{path}")
+                    );
+                    horizon_trace_mark!("rust:loot-art:texture-upload:begin");
                     let tex = Texture2D::from_rgba8(image.width, image.height, &image.pixels);
                     tex.set_filter(FilterMode::Linear);
+                    horizon_trace_mark!("rust:loot-art:texture-upload:ok");
                     textures.insert(path.clone(), tex);
                 }
                 grade_layers.push(Layer {
@@ -75,9 +81,17 @@ impl Art {
             layers,
             effects: GRADES
                 .iter()
-                .map(|g| crate::pickup_effects::Effect::load(assets, g.model(), "idle", specs))
+                .map(|g| {
+                    Ok(horizon_try!(
+                        crate::pickup_effects::Effect::load(assets, g.model(), "idle", specs),
+                        &format!("loot_art::Art::load:idle-effect:{}", g.model())
+                    ))
+                })
                 .collect::<Result<_>>()?,
-            materials: [material(false)?, material(true)?],
+            materials: [
+                horizon_try!(material(false), "loot_art::Art::load:material:add"),
+                horizon_try!(material(true), "loot_art::Art::load:material:filter"),
+            ],
         })
     }
     pub fn draw(
@@ -159,14 +173,23 @@ impl Art {
 
 thread_local! {
     // Quickload keeps both level owners alive; do not allocate more pipelines.
-    static MATERIALS: RefCell<[Weak<Material>; 2]> = RefCell::new(Default::default());
+    static MATERIALS: RefCell<[Weak<Material>; 2]> = {
+        horizon_trace_mark!("rust:loot-art:materials-tls:init:begin");
+        let cache = RefCell::new(Default::default());
+        horizon_trace_mark!("rust:loot-art:materials-tls:init:ready");
+        cache
+    };
 }
 fn material(filter: bool) -> Result<Rc<Material>> {
+    horizon_trace_mark!("rust:loot-art:materials-tls:with:begin");
     MATERIALS.with(|cache| {
+        horizon_trace_mark!("rust:loot-art:materials-tls:lookup:begin");
         let index = usize::from(filter);
         if let Some(m) = cache.borrow()[index].upgrade() {
+            horizon_trace_mark!("rust:loot-art:materials-tls:lookup:hit");
             return Ok(m);
         }
+        horizon_trace_mark!("rust:loot-art:materials-tls:lookup:miss");
         let mut uniforms = crate::environment::uniforms();
         uniforms.push(UniformDesc::new("FogMode", UniformType::Float1));
         let (source, dest) = if filter {
@@ -177,7 +200,7 @@ fn material(filter: bool) -> Result<Rc<Material>> {
         } else {
             (BlendFactor::One, BlendFactor::One)
         };
-        let m = Rc::new(
+        let m = Rc::new(horizon_try!(
             load_material(
                 ShaderSource::Glsl {
                     vertex: crate::character::VERTEX,
@@ -193,9 +216,12 @@ fn material(filter: bool) -> Result<Rc<Material>> {
                     ..Default::default()
                 },
             )
-            .map_err(|e| anyhow::anyhow!("Meta Essence shader: {e:?}"))?,
-        );
+            .map_err(|e| anyhow::anyhow!("Meta Essence shader: {e:?}")),
+            "loot_art::material:load-shader"
+        ));
+        horizon_trace_mark!("rust:loot-art:materials-tls:store:begin");
         cache.borrow_mut()[index] = Rc::downgrade(&m);
+        horizon_trace_mark!("rust:loot-art:materials-tls:store:ok");
         Ok(m)
     })
 }
