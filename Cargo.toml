@@ -37,6 +37,8 @@ flate2 = { version = "=1.1.10", default-features = false, features = ["rust_back
 [features]
 default = ["coop-tls"]
 coop-tls = ["tungstenite/native-tls"]
+# Diagnostic only: enables horizon_trace_scope! on the Horizon target. Off by default.
+horizon-trace = []
 
 [build-dependencies]
 sha2 = "=0.10.9"

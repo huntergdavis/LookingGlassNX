@@ -18,6 +18,8 @@ extern "Rust" fn __getrandom_v03_custom(
     }
 }
 
+#[macro_use]
+mod horizon_trace;
 mod acting;
 mod ambient_animation;
 mod animation_events;

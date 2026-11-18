@@ -169,6 +169,7 @@ macro_rules! horizon_light_diag {
 }
 
 pub fn load_art(assets: &mut Assets) -> Result<()> {
+    horizon_trace_scope!("lighting::load_art");
     horizon_light_diag!("rust:lighting:load-art-enter");
     horizon_light_diag!("rust:lighting:shadow-check-begin");
     let shadow_loaded = has_shadow();

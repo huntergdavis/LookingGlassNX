@@ -372,6 +372,7 @@ impl Baked {
 
 impl Catalog {
     pub fn load(assets: &mut Assets, map: &Bsp, name: &str) -> Result<Self> {
+        horizon_trace_scope!("decorations::Catalog::load");
         let script = format!("maps/{name}.scr");
         let calls = Calls::load(assets, &script)?;
         let mut baked = HashMap::from([(0, Baked::new(map, 0))]);

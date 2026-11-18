@@ -420,6 +420,7 @@ fn load_layers(
     white: &Texture2D,
     missing: &mut Vec<String>,
 ) -> Result<Vec<Layer>> {
+    horizon_trace_scope!("render::load_layers");
     let lightmapped = spec.is_some_and(|s| {
         s.stages
             .iter()
@@ -1124,6 +1125,7 @@ impl Scene {
         name: &str,
         difficulty: crate::powerups::Difficulty,
     ) -> Result<Self> {
+        horizon_trace_scope!("render::Scene::load_for");
         horizon_scene_diag!("rust:scene-load:{name}:archive-read-begin");
         let bsp = assets.read(&format!("maps/{name}.bsp"))?;
         horizon_scene_diag!(
@@ -1147,6 +1149,7 @@ impl Scene {
     /// already built (with the difficulty applied) so that the viewer and a headless route share
     /// one copy of them.
     pub fn from_parts(assets: &mut Assets, name: &str, map: Bsp, world: World) -> Result<Self> {
+        horizon_trace_scope!("render::Scene::from_parts");
         horizon_scene_diag!("rust:scene-load:{name}:lighting-begin");
         crate::lighting::load_art(assets)?;
         horizon_scene_diag!("rust:scene-load:{name}:lighting-ready");
