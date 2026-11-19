@@ -1,3 +1,72 @@
+# Looking Glass — source, plus the LookingGlassNX Nintendo Switch port
+
+This repository publishes the **source** of Looking Glass, an unofficial Rust
+re-implementation of *American McGee's Alice*, together with the
+**LookingGlassNX Nintendo Switch port** on branch `switch`.
+
+**It contains no game data.** You must supply your own compatible game files.
+*American McGee's Alice* belongs to EA; original game content remains with EA and
+its rights holders. This project claims no ownership of it.
+[Read the rights and distribution notice](LEGAL.md) and
+[what this publication excluded and why](PUBLICATION.md).
+
+## Branches
+
+- **`main`** — the engine.
+- **`switch`** — the engine plus the Switch port: devkitA64/libnx bring-up, the
+  EGL/miniquad Horizon backend, the Alice asset pipeline, and the hardware
+  bring-up work.
+
+Release downloads are not published here; they live at
+[looking-glass-project/LookingGlass](https://github.com/looking-glass-project/LookingGlass).
+
+## Building
+
+Desktop, from the repository root:
+
+```sh
+cargo build --release
+```
+
+Switch NRO. Three things are easy to get wrong, so they are spelled out:
+
+```sh
+cd switch/miniquad-horizon-spike
+# 1. The pinned nightly toolchain must be selected explicitly. The system cargo
+#    resolves the wrong sysroot and `build-std` then fails.
+export RUSTC=~/.rustup/toolchains/nightly-2026-11-10-x86_64-unknown-linux-gnu/bin/rustc
+export RUSTDOC=~/.rustup/toolchains/nightly-2026-11-10-x86_64-unknown-linux-gnu/bin/rustdoc
+~/.rustup/toolchains/nightly-2026-11-10-x86_64-unknown-linux-gnu/bin/cargo build \
+  --manifest-path ../../Cargo.toml --lib --release --no-default-features --locked --offline
+# 2. Link inside the devkitA64 image. `rm -rf build` matters: make does not track
+#    CFLAGS, so a stale object silently produces the wrong NRO.
+sudo docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/../..:/work" -w /work/switch/miniquad-horizon-spike \
+  local-alice-switch-builder@sha256:885f305c1f942475bf1d37681da8b4aebfa6eea9e16360625474c35b7611d587 \
+  sh -lc 'export DEVKITPRO=/opt/devkitpro PATH=/opt/devkitpro/aarch64-none-elf/bin:/opt/devkitpro/tools/bin:/usr/bin:/bin; rm -rf build; make'
+```
+
+Diagnostic builds add `--features horizon-trace` to cargo and `LG_STDERR_TO_LOG=1`
+to `make`, which points stderr at the diagnostic log file so the Rust runtime's
+own allocation and stack messages are kept. `switch/miniquad-horizon-spike/README.md`
+has the full command set and the checks that prove the defines took effect.
+
+## Switch status
+
+The port boots on hardware and reaches gameplay. The work in flight is frame rate
+and load time; branch `switch` carries the current state, and the commit messages
+record what each diagnostic build measured on the device. Treat the Switch target
+as experimental: it has been run on one console and one firmware.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending anything. The short version:
+commit newly authored code, identifiers, numbers and paraphrased research only —
+**no original game archives, executables, assets, scripts, subtitles, transcripts
+or decompiler dumps**, and no personal saves. Work that needs those materials
+stays local.
+
+---
+
 # Looking Glass — American McGee's Alice Re-Remaster
 
 **Play the whole game, from the opening to the final boss, ending and credits.**
