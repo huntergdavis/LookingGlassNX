@@ -2,10 +2,19 @@
 //!
 //! libnx hands out twelve TLS slots per process: `threadTlsAlloc` rejects any slot index above
 //! `0x0b` (`cmp w19, #0xb; b.hi`), and `pthread_key_create` turns that rejection into an error,
-//! which std reports as `fatal runtime error: out of TLS keys, aborting`. std burns one slot per
-//! `thread_local!` static that is first touched and whose type needs dropping, so a crate that
-//! declares nineteen of them cannot boot: build 13d died exactly there, inside
-//! `pickup_effects::Effect::load`, on the twelfth new slot.
+//! which std reports as `fatal runtime error: out of TLS keys, aborting`.
+//!
+//! std spends **one key per `thread_local!` static, on first touch, with no exceptions** — this
+//! target has no `has-thread-local`, so std uses the key/destructor implementation, and even a
+//! `Cell<f32>` cache carries a `destroy_value` entry. This crate declared eighteen such statics
+//! (fifteen reachable on Horizon; the vendored miniquad adds one more), so the thirteenth key
+//! allocation aborted. Build 13d died exactly there, inside `pickup_effects::Effect::load`.
+//! Keys are per *process*, not per thread: starting another thread costs no key, only the set of
+//! statics first touched matters.
+//!
+//! Measured in the linked binary: 23 `destroy_value` statics before this change, 10 after — one
+//! from here, the rest std and dependencies — against a limit of 12. That is 2 slots of margin,
+//! not unlimited room, so do not spend them.
 //!
 //! Every such cache therefore lives in this one struct behind a single `thread_local!`, and each
 //! module keeps its old `NAME.with(|cell| ..)` call shape through [`Field`] / [`CellField`]. The
@@ -73,7 +82,8 @@ thread_local! {
 }
 
 /// Borrow `RefCell`-shaped state. Reentrant with respect to other fields, exactly like separate
-/// `thread_local!`s were; borrowing one field twice at once still panics, as it did before.
+/// `thread_local!`s were; two immutable borrows of one field are still fine, and a mutable borrow
+/// alongside any other still panics, exactly as it did before.
 pub(crate) struct Field<T>(for<'a> fn(&'a State) -> &'a RefCell<T>);
 
 impl<T> Field<T> {
@@ -114,6 +124,17 @@ mod tests {
                 assert!(l.borrow().is_empty());
             });
         });
+    }
+
+    #[test]
+    fn same_type_fields_do_not_alias() {
+        // `lights` and `croquet` are both `RefCell<Vec<Light>>`, so a copy-paste accessor could
+        // point at the wrong one and still type-check. Two immutable borrows would hide that.
+        let lights: Field<Vec<crate::lighting::Light>> = Field::new(|s| &s.lights);
+        let croquet: Field<Vec<crate::lighting::Light>> = Field::new(|s| &s.croquet);
+        let lights_ptr = lights.with(|l| l as *const _ as usize);
+        let croquet_ptr = croquet.with(|c| c as *const _ as usize);
+        assert_ne!(lights_ptr, croquet_ptr, "two accessors share one field");
     }
 
     #[test]
