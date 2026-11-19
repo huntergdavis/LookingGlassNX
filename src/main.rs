@@ -20,6 +20,7 @@ extern "Rust" fn __getrandom_v03_custom(
 
 #[macro_use]
 mod horizon_trace;
+mod thread_state;
 mod acting;
 mod ambient_animation;
 mod animation_events;
@@ -195,9 +196,10 @@ fn main() {
 // build 7 is af77a79/44c95ba; build 8 is 9fa9d3e/d70d286; build 9 is ac70c12/66cdaba;
 // build 10 is 472b930/509da92; build 11 is 7ab6fc5 (trace, label 0d92951);
 // Build 12 is 9ddf8d5 (trace, frame window); 13a traces post-ready steps; 13b traces power-up art;
-// 13c traces loot art; this candidate is 13d (heap watermark, prop internals, stderr to log).
+// 13c traces loot art; 13d adds heap watermarks, prop internals and stderr capture; this candidate
+// is build 14 (one TLS slot for every cache: libnx grants twelve and the crate needed nineteen).
 #[cfg(target_os = "horizon")]
-const BUILD_NUMBER: &str = "13d";
+const BUILD_NUMBER: &str = "14";
 #[cfg(target_os = "horizon")]
 #[no_mangle]
 pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
@@ -206,6 +208,8 @@ pub extern "C" fn lookingglass_horizon_game_entry() -> bool {
         lg_horizon_diag(b"rust:panic\0".as_ptr().cast());
     }));
     horizon_diag(&format!("rust:build:{}", BUILD_NUMBER));
+    // Proves at a glance that this build is the one-slot one, not a 13x build with a relabelled NACP.
+    horizon_diag("rust:tls:single-slot");
     horizon_diag("rust:game-entry-entered");
     match run() {
         Ok(()) => { horizon_diag("rust:game-entry-accepted"); true },

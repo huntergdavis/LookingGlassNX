@@ -11,7 +11,9 @@ pub struct Art {
     layers: BTreeMap<&'static str, (Texture2D, Rc<render_fx::Surface>)>,
     impact: Attached,
 }
-thread_local! { static CACHE: std::cell::RefCell<std::rc::Weak<Art>> = Default::default(); }
+// One shared TLS slot for the whole game: see crate::thread_state.
+static CACHE: crate::thread_state::Field<std::rc::Weak<Art>> =
+    crate::thread_state::Field::new(|s| &s.attack_fx_cache);
 const MATERIALS: [&str; 2] = ["queenbeam1", "emap1"];
 
 fn ribbon(from: Vec3, to: Vec3, camera: Vec3, width: f32, repeats: f32) -> Option<Mesh> {

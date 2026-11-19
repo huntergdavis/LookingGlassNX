@@ -1602,12 +1602,12 @@ fn animation_camera_bounds(label: &str, min: Vec3, max: Vec3) {
         ..Default::default()
     });
 }
-thread_local! {
-    // Every actor/prop uses this same pipeline. Keep ownership weak in the cache
-    // so it is released with the last scene, but never allocate one per actor or
-    // duplicate it while a quickload retains the previous complete game.
-    static SKIN_MATERIAL: std::cell::RefCell<std::rc::Weak<Material>> = Default::default();
-}
+// Every actor/prop uses this same pipeline. Keep ownership weak in the cache
+// so it is released with the last scene, but never allocate one per actor or
+// duplicate it while a quickload retains the previous complete game.
+// One shared TLS slot for the whole game: see crate::thread_state.
+static SKIN_MATERIAL: crate::thread_state::Field<std::rc::Weak<Material>> =
+    crate::thread_state::Field::new(|s| &s.skin_material);
 pub(crate) fn skin_material() -> Result<SkinMaterial> {
     SKIN_MATERIAL.with(|cache| {
         if let Some(material) = cache.borrow().upgrade() {

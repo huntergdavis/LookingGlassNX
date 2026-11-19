@@ -1,6 +1,8 @@
 //! Optional local CPU profiling; inactive during ordinary play.
 use std::{cell::RefCell, collections::BTreeMap, time::Instant};
-thread_local! { static SAMPLES: RefCell<BTreeMap<&'static str, Vec<f64>>> = RefCell::default(); }
+// One shared TLS slot for the whole game: see crate::thread_state.
+static SAMPLES: crate::thread_state::Field<BTreeMap<&'static str, Vec<f64>>> =
+    crate::thread_state::Field::new(|s| &s.profile_samples);
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("LOOKING_GLASS_FRAME_PROFILE").is_some())

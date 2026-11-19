@@ -977,9 +977,9 @@ pub struct PickupBurst {
     texture: Texture2D,
     material: std::rc::Rc<Material>,
 }
-thread_local! {
-    static BURST_MATERIAL: std::cell::RefCell<std::rc::Weak<Material>>=Default::default();
-}
+// One shared TLS slot for the whole game: see crate::thread_state.
+static BURST_MATERIAL: crate::thread_state::Field<std::rc::Weak<Material>> =
+    crate::thread_state::Field::new(|s| &s.burst_material);
 impl PickupBurst {
     pub fn load(assets: &mut Assets) -> Result<Self> {
         let specs = texture::read_materials(assets)?;
@@ -1090,9 +1090,9 @@ pub fn check(assets: &mut Assets) -> Result<()> {
 }
 
 // Emitters and attached animation effects share two pipelines across model/map reloads.
-thread_local! {
-    static PARTICLE_MATERIALS: std::cell::RefCell<Vec<std::rc::Weak<Material>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+// One shared TLS slot for the whole game: see crate::thread_state.
+static PARTICLE_MATERIALS: crate::thread_state::Field<Vec<std::rc::Weak<Material>>> =
+    crate::thread_state::Field::new(|s| &s.particle_materials);
 fn shared_materials() -> Result<Vec<std::rc::Rc<Material>>> {
     PARTICLE_MATERIALS.with(|cache| {
         let existing: Option<Vec<_>> = cache.borrow().iter().map(|m| m.upgrade()).collect();

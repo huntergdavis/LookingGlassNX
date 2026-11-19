@@ -8,10 +8,11 @@ pub fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("LOOKING_GLASS_UI_PROBE").as_deref() == Ok("1"))
 }
-thread_local! {
-    static PREVIOUS: RefCell<Value> = const { RefCell::new(Value::Null) };
-    static NOTES: RefCell<std::collections::BTreeMap<String, Value>> = const { RefCell::new(std::collections::BTreeMap::new()) };
-}
+// One shared TLS slot for the whole game: see crate::thread_state.
+static PREVIOUS: crate::thread_state::Field<Value> =
+    crate::thread_state::Field::new(|s| &s.ui_probe_previous);
+static NOTES: crate::thread_state::Field<std::collections::BTreeMap<String, Value>> =
+    crate::thread_state::Field::new(|s| &s.ui_probe_notes);
 pub fn note(name: &str, value: Value) {
     if !enabled() { return; }
     NOTES.with(|notes| {

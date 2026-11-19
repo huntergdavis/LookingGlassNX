@@ -190,15 +190,9 @@ impl Art {
     }
 }
 
-thread_local! {
-    // Quickload keeps both level owners alive; do not allocate more pipelines.
-    static MATERIALS: RefCell<[Weak<Material>; 2]> = {
-        horizon_trace_mark!("rust:loot-art:materials-tls:init:begin");
-        let cache = RefCell::new(Default::default());
-        horizon_trace_mark!("rust:loot-art:materials-tls:init:ready");
-        cache
-    };
-}
+// One shared TLS slot for the whole game: see crate::thread_state.
+static MATERIALS: crate::thread_state::Field<[Weak<Material>; 2]> =
+    crate::thread_state::Field::new(|s| &s.loot_materials);
 fn material(filter: bool) -> Result<Rc<Material>> {
     horizon_trace_mark!("rust:loot-art:materials-tls:with:begin");
     MATERIALS.with(|cache| {

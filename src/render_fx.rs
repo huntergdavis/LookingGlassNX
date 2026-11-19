@@ -37,7 +37,7 @@ struct Group {
     passes: Vec<Pass>,
 }
 #[derive(Default)]
-struct Frame {
+pub(crate) struct Frame {
     active: bool,
     camera: Vec3,
     direction: Vec3,
@@ -51,11 +51,13 @@ struct Frame {
     retained: Vec<(std::sync::Arc<Material>, Option<Texture2D>)>,
     projection: Option<Mat4>,
 }
-thread_local! {
-    static FRAME: RefCell<Frame> = RefCell::default();
-    static SKIN_OPACITY: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
-    static SURFACES: RefCell<Vec<(macroquad::miniquad::TextureId, Weak<Surface>)>> = RefCell::default();
-}
+// One shared TLS slot for the whole game: see crate::thread_state. These keep the old
+// `NAME.with(|cell| ..)` shape, and no longer create a TLS key per static.
+static FRAME: crate::thread_state::Field<Frame> = crate::thread_state::Field::new(|s| &s.frame);
+static SKIN_OPACITY: crate::thread_state::CellField<f32> =
+    crate::thread_state::CellField::new(|s| &s.skin_opacity);
+static SURFACES: crate::thread_state::Field<Vec<(macroquad::miniquad::TextureId, Weak<Surface>)>> =
+    crate::thread_state::Field::new(|s| &s.surfaces);
 const MAX_VERTICES: usize = 1_000_000;
 pub fn copy_mesh(m: &Mesh) -> Mesh {
     Mesh {

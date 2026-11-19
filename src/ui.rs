@@ -284,7 +284,8 @@ pub struct Ui {
     cursor: Texture2D,
     arrow: Texture2D,
 }
-thread_local! { static SHARED: RefCell<Weak<Ui>> = const { RefCell::new(Weak::new()) }; }
+// One shared TLS slot for the whole game: see crate::thread_state.
+static SHARED: crate::thread_state::Field<Weak<Ui>> = crate::thread_state::Field::new(|s| &s.ui_shared);
 impl Ui {
     pub fn load(assets: &mut Assets) -> Result<Rc<Self>> {
         if let Some(ui) = SHARED.with(|s| s.borrow().upgrade()) {

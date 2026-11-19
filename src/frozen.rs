@@ -7,7 +7,9 @@ pub(crate) struct Art {
     textures: [Texture2D; 2],
     _surfaces: [Rc<render_fx::Surface>; 2],
 }
-thread_local! { static CACHE: std::cell::RefCell<std::rc::Weak<Art>> = Default::default(); }
+// One shared TLS slot for the whole game: see crate::thread_state.
+static CACHE: crate::thread_state::Field<std::rc::Weak<Art>> =
+    crate::thread_state::Field::new(|s| &s.frozen_cache);
 impl Art {
     pub fn load(
         a: &mut Assets,

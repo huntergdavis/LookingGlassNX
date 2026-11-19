@@ -12,12 +12,14 @@ pub struct Light {
     pub only_models: bool,
     pub flare: bool,
 }
-thread_local! {
-    static LIGHTS: RefCell<Vec<Light>> = const {RefCell::new(Vec::new())};
-    static SHADOW: RefCell<Option<Texture2D>> = const {RefCell::new(None)};
-    static FLARE: RefCell<Option<Texture2D>> = const {RefCell::new(None)};
-    static CROQUET: RefCell<Vec<Light>> = const {RefCell::new(Vec::new())};
-}
+// One shared TLS slot for the whole game: see crate::thread_state.
+static LIGHTS: crate::thread_state::Field<Vec<Light>> = crate::thread_state::Field::new(|s| &s.lights);
+static SHADOW: crate::thread_state::Field<Option<Texture2D>> =
+    crate::thread_state::Field::new(|s| &s.shadow);
+static FLARE: crate::thread_state::Field<Option<Texture2D>> =
+    crate::thread_state::Field::new(|s| &s.flare);
+static CROQUET: crate::thread_state::Field<Vec<Light>> =
+    crate::thread_state::Field::new(|s| &s.croquet);
 // Horizon only: the shadow and flare textures live in process-wide Mutex slots instead of
 // thread_local RefCells. Logs 021-023 end at the first SHADOW access in load_art, so the
 // thread_local access is the suspected fault. Both slots are read and written on the one

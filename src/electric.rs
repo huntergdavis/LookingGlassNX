@@ -20,7 +20,9 @@ pub struct Art {
     deforms: Vec<crate::materials::Deform>,
     _surface: Rc<render_fx::Surface>,
 }
-thread_local! { static CACHE: std::cell::RefCell<std::rc::Weak<Art>> = Default::default(); }
+// One shared TLS slot for the whole game: see crate::thread_state.
+static CACHE: crate::thread_state::Field<std::rc::Weak<Art>> =
+    crate::thread_state::Field::new(|s| &s.electric_cache);
 impl Art {
     pub fn load(
         assets: &mut Assets,
