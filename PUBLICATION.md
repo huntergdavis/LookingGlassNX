@@ -31,6 +31,7 @@ history.
 | `switch/**/assets/*-icon-source.png`, `switch/**/icon.jpg` | 2.4 MB | derived from game art; the shipped icon is regenerated locally |
 | any original game data (`*.pk3`, `*.tga`, `*.ftx`, `*.pcx`, `*.cik`, audio) | — | never committed; the engine reads the user's own files at runtime |
 | all other binary media (`png/jpg/gif/mp4/wav/mp3/ogg/zip/7z/bin`) | — | the repository publishes source, not media |
+| internal build records and coordination notes (`BUILD-RECORD.md`, `ICON_PROVENANCE.md`) | — | they name local workstation paths and internal process; the shipped icon is regenerated locally from source art you supply |
 
 `THIRD_PARTY_NOTICES.txt`, `LICENSE-MIT` and `LEGAL.md` are kept verbatim.
 `LEGAL.md` states the project's position on EA's ownership of the original game,
